@@ -118,7 +118,7 @@ class FaissVectorStore(VectorStore):
             filters: Optional[Dict] = None) -> List[Tuple[float, Union[SemanticRecord, EpisodicRecord, ProceduralRecord]]]:
         assert method in ["embedding", "bm25", "overlapping"], "Unsupported query method."
 
-        if self.index is None or self.index.ntotal == 0:
+        if self.index is None or self.index.ntotal == 0 or limit == 0:
             return []       
         results = []
 

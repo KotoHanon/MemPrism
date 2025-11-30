@@ -5,7 +5,7 @@ from memory.memory_system.utils import new_id, dump_slot_json
 from pydantic import BaseModel, Field, field_validator, validate_call
 from openai import OpenAI
 from textwrap import dedent
-from memory.memory_system.user_prompt import WORKING_SLOT_FILTER_USER_PROMPT, WORKING_SLOT_ROUTE_USER_PROMPT
+from memory.memory_system.user_prompt import WORKING_SLOT_QA_FILTER_USER_PROMPT, WORKING_SLOT_ROUTE_USER_PROMPT
 from memory.memory_system.llm import OpenAIClient, LLMClient
 
 class SlotPayload(BaseModel):
@@ -35,7 +35,7 @@ class WorkingSlot(SlotPayload):
     
     async def slot_filter(self, llm: LLMClient) -> bool:
         system_prompt = "You are a memory access reviewer. Only output 'yes' or 'no'."
-        user_prompt = WORKING_SLOT_FILTER_USER_PROMPT.format(slot_dump=dump_slot_json(self))
+        user_prompt = WORKING_SLOT_QA_FILTER_USER_PROMPT.format(slot_dump=dump_slot_json(self))
         out = await llm.complete(system_prompt, user_prompt)
 
         if out.strip().lower() not in ["yes", "no"]:

@@ -272,11 +272,18 @@ class AyumuClient(BaseClient):
 
     def chat_with_memories(self, message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
         # Retrieve relevant memories
-        relevant_semantic_memories = self.semantic_memory_system.query(query_text=message, limit=3)
-        relevant_episodic_memories = self.episodic_memory_system.query(query_text=message, limit=3)
-        #relevant_memories = self.memory_system.search_agentic(message, k=3)
-        semantic_memories_str = "\n".join(f"- {entry['detail']}" for entry in relevant_semantic_memories)
-        episodic_memories_str = "\n".join(f"- {_safe_dump_str(entry['detail'])}" for entry in relevant_episodic_memories)
+        sem_query_limit = min(3, self.semantic_memory_system.size // 5)
+        epi_query_limit = min(3, self.episodic_memory_system.size // 5)
+        relevant_semantic_memories = self.semantic_memory_system.query(query_text=message, limit=sem_query_limit)
+        relevant_episodic_memories = self.episodic_memory_system.query(query_text=message, limit=epi_query_limit)
+
+        if len(relevant_semantic_memories) != 0:
+            print(f"[1st Semantic Memories Retrieved]: {relevant_semantic_memories[0][1].detail}")
+        if len(relevant_episodic_memories) != 0:
+            print(f"[1st Episodic Memories Retrieved]: {_safe_dump_str(relevant_episodic_memories[0][1].detail)}")
+
+        semantic_memories_str = "\n".join(f"- {entry[1].detail}" for entry in relevant_semantic_memories)
+        episodic_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].detail)}" for entry in relevant_episodic_memories)
         self.semantic_memories.append(semantic_memories_str)
         self.episodic_memories.append(episodic_memories_str)
         # Generate Assistant response
@@ -313,6 +320,9 @@ class AyumuClient(BaseClient):
         self.slot_process.clear_container()
 
         working_slots = await self.slot_process.transfer_qa_agent_context_to_working_slots(context=context)
+        if len(working_slots) == 0:
+            return
+        
         for slot in working_slots:
             self.slot_process.add_slot(slot)
         
@@ -330,6 +340,9 @@ class AyumuClient(BaseClient):
         
         self.semantic_memory_system.add(semantic_records)
         self.episodic_memory_system.add(episodic_records)
+
+        print(f"[Info] Number of semantic memories: {self.semantic_memory_system.size}")
+        print(f"[Info] Number of episodic memories: {self.episodic_memory_system.size}")
         
     @property
     def has_memory(self):

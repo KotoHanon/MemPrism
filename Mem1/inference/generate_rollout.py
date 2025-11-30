@@ -157,7 +157,8 @@ if __name__ == "__main__":
     
     def process_row(func_args):
         index, row, client, model = func_args
-        client.reset()
+        if inference_type != "ayumu":
+            client.reset()
         try:
             # prompt = row['question']
             prompt = row["prompt"][0]["content"]

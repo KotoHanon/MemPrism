@@ -1,6 +1,6 @@
 from textwrap import dedent
 
-WORKING_SLOT_FILTER_USER_PROMPT = dedent("""
+WORKING_SLOT_EXPERIEMENT_FILTER_USER_PROMPT = dedent("""
 You guard ResearchAgent's long-term memory entrance. Decide if this WorkingSlot deserves promotion into FAISS storage.
 
 Assess four dimensions:
@@ -8,6 +8,38 @@ Assess four dimensions:
 2. Utility – can future tasks reuse the insight, metric, procedure, or decision?
 3. Stability – will the information stay valid for multiple iterations (i.e., not a transient log)?
 4. Evidence – do attachments, metrics, or tags provide concrete support?
+
+Return `yes` only when at least two dimensions are clearly satisfied or the slot closes a critical loop (e.g., root-causing a failure, finishing a checklist item). Otherwise return `no`.
+
+STRICT OUTPUT: respond with a single lowercase word: `yes` or `no`. Do not explain.
+
+<slot-dump>
+{slot_dump}
+</slot-dump>
+""")
+
+WORKING_SLOT_QA_FILTER_USER_PROMPT = dedent("""
+You guard QA-Agent's long-term memory entrance. Decide if this WorkingSlot deserves promotion into FAISS storage.
+
+Assess three dimensions for whether to store a memory. Your goal is to keep any information that can help answer similar questions in the future, not only groundbreaking discoveries.
+
+1. Question relevance – Does this information help answer the current question, explain a reasoning step, or connect two entities/events that the question cares about?
+   - Examples: "X is the capital of Y", "Person A is the parent of Person B", "Event C happened before Event D".
+
+2. Reusable fact or pattern – Could a similar question in the future reuse this fact, relation, or short reasoning chain?
+   - This includes:
+     - Entity attributes (dates, locations, roles, definitions).
+     - Relations between entities (A part_of B, A causes B, A located_in B).
+     - Short multi-hop links that serve as a bridge between pieces of evidence.
+
+3. Reliability from context – Is this information explicitly stated or clearly implied by the given context, rather than purely guessed?
+   - Prefer facts supported by sentences in the context over speculative statements.
+
+Decision rule:
+- Store as memory if it is clearly relevant to the question (dimension 1) AND it satisfies at least one of dimensions 2 or 3.
+- Do NOT store:
+  - Pure logging / formatting / boilerplate ("Now I will think step by step", "Searching Wikipedia...").
+  - Extremely local details that do not help answer questions (token-level noise, partial URLs, random IDs).
 
 Return `yes` only when at least two dimensions are clearly satisfied or the slot closes a critical loop (e.g., root-causing a failure, finishing a checklist item). Otherwise return `no`.
 
@@ -106,17 +138,15 @@ Context Snapshot:
 </workflow-context>
 
 Authoring rules:
-1. Each slot MUST capture a single reusable takeaway (decision, discovery, bottleneck, or command).
-2. `stage` MUST be one of: question_understanding, information_retrieval, answer_generation, answer_validation, meta.
-3. `summary` follows Situation → Action → Result whenever data exists; keep ≤130 words.
-4. `topic` is a 3–6 word slug referencing the problem space.
-5. `attachments` is optional but, when present, group similar info under keys such as
+1. `stage` MUST be one of: question_understanding, information_retrieval, answer_generation, answer_validation, meta.
+2. `summary` follows Situation → Action → Result whenever data exists; keep ≤130 words.
+3. `topic` is a 3–6 word slug referencing the problem space.
+4. `attachments` is optional but, when present, group similar info under keys such as
     - "notes": {{"items": []}}
     - "references": {{"links": []}}
     - "issues": {{"list": []}}
     - "actions": {{"list": []}}
-6. `tags` is a list of lowercase keywords (≤5 items) mixing domain + workflow hints.
-7. If the context lacks meaningful content, return `"slots": []` but keep the envelope.
+5. `tags` is a list of lowercase keywords (≤5 items) mixing domain + workflow hints.
 
 Output STRICTLY as JSON within the tags below:
 <working-slots>
