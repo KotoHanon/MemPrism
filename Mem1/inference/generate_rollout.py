@@ -99,6 +99,8 @@ if __name__ == "__main__":
                         help="Use LiteLLM client")
     parser.add_argument("--abstract_memories", action="store_true", default=False,
                         help="Use abstract memories (only for ayumu)")
+    parser.add_argument("--max_workers", type=int, default=1,
+                        help="Maximum number of parallel workers")
     parser.add_argument("--resume_file", type=str, default=None,
                         help="Output file name")
     parser.add_argument("--data_file", type=str, default="Mem1/data/websearch_multi_3/test.parquet",
@@ -343,7 +345,7 @@ if __name__ == "__main__":
             process_row(row)
 
     elif args.use_ayumu:
-        max_workers = 3
+        max_workers = args.max_workers
         llm_client = AyumuClient()
         row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
         for batch in chunks(row_data, max_workers):
@@ -354,7 +356,7 @@ if __name__ == "__main__":
                 num_slots = len(working_slots)
                 # filter and route
                 print(f"[Info] Filtering and routing {num_slots} slots")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=num_slots) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     list(tqdm(executor.map(
                         llm_client.slot_process.multi_thread_filter_and_route_slot,
                         working_slots,
@@ -365,7 +367,7 @@ if __name__ == "__main__":
                 num_routed_slots = len(routed_slots)
                 print(f"[Info] Transferring memories from {num_routed_slots} slots to memory systems")
                 # generate memories in multi-threaded way
-                with concurrent.futures.ThreadPoolExecutor(max_workers=num_routed_slots) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     list(tqdm(executor.map(
                         llm_client.slot_process.multi_thread_transfer_slot_to_memory,
                         routed_slots,
@@ -373,7 +375,7 @@ if __name__ == "__main__":
                     total=num_routed_slots
                     ))
                 # transfer memories to records
-                llm_client.multi_thread_transfer_dicts_to_memories(is_abstract=args.abstract_memories)
+                asyncio.run(llm_client.multi_thread_transfer_dicts_to_memories(is_abstract=args.abstract_memories))
             except Exception as e:
                 print(f"Error processing batch: {e}")
 

@@ -381,6 +381,9 @@ class AyumuClient(BaseClient):
         self.episodic_memory_system.add(episodic_records)
 
     async def multi_thread_transfer_dicts_to_memories(self, is_abstract):
+        semantic_records = []
+        episodic_records = []
+
         for i in self.slot_process.memory_dict:
             if i['memory_type'] == 'semantic':
                 semantic_records.append(self.semantic_memory_system.instantiate_sem_record(**i['input']))
@@ -390,8 +393,10 @@ class AyumuClient(BaseClient):
         if is_abstract and len(episodic_records) > 0:
             await self.abstract_episodic_records_to_semantic_record(episodic_records)
 
-        self.semantic_memory_system.add(semantic_records)
-        self.episodic_memory_system.add(episodic_records)
+        if len(semantic_records) > 0:
+            self.semantic_memory_system.add(semantic_records)
+        if len(episodic_records) > 0:
+            self.episodic_memory_system.add(episodic_records)
 
     async def load_inputs_to_memory_records(self, inputs: List[Dict[str, Any]]):
         if not inputs or len(inputs) == 0:
