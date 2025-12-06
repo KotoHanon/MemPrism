@@ -25,6 +25,7 @@ from memory.memory_system.models import EpisodicRecord, SemanticRecord
 from datetime import datetime
 import os
 from tqdm import tqdm
+import random
 
 log_filename = datetime.now().strftime("train_%Y%m%d_%H%M%S.log")
 logger = setup_logger("retrieve_memory", log_path=os.path.join("inference/log/retrieve_memory/", log_filename) ,level=logging.INFO)
@@ -284,7 +285,8 @@ class AyumuClient(BaseClient):
         sem_query_limit = min(3, self.semantic_memory_system.size // 3)
         epi_query_limit = min(3, self.episodic_memory_system.size // 3)
         if len(query_text) > 0:
-            relevant_slots = self.slot_process.query_with_given_slots(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split())
+            relevant_slots = self.slot_process.query_by_reduced_svd(query_text=message, embed_func=self.semantic_memory_system.vector_store._embed, slots=slots, limit=slot_query_limit, key_words=query_text.split())
+            #relevant_slots = self.slot_process.query_with_given_slots(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split())
             relevant_semantic_memories = self.semantic_memory_system.query(query_text=query_text, limit=sem_query_limit, threshold=threshold)
             relevant_episodic_memories = self.episodic_memory_system.query(query_text=query_text, limit=epi_query_limit, threshold=threshold)
             

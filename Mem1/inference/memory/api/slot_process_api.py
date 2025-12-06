@@ -1,5 +1,6 @@
 import json
 import asyncio
+import numpy as np
 
 from typing import Dict, Iterable, List, Literal, Optional, Tuple, Union, Any
 from collections import deque
@@ -70,6 +71,37 @@ class SlotProcess:
         scored_slots.sort(key=lambda x: x[0], reverse=True)
         
         return scored_slots[:k]
+
+    def query_by_reduced_svd(self, query_text: str, embed_func, slots: List[WorkingSlot], limit: int = 5, key_words: Optional[List[str]] = None, alpha: float = 0.9) -> List[Tuple[float, WorkingSlot]]:
+        k = min(limit, len(slots))
+
+        query_emb = embed_func([query_text]) # [1, dim]
+        slot_embs = embed_func([slot.summary for slot in slots]) # [n, dim]
+        U, S, Vt = np.linalg.svd(slot_embs, full_matrices=False) # [n, dim] -> U[n, r], S: [r,], Vt: [r, dim]
+        Sigma = np.diag(S)
+
+        Z = (query_emb @ Vt.T).ravel()  # -> (r,)
+        tmp = [(i, z_i) for i, z_i in enumerate(Z)]
+        tmp.sort(key=lambda x : abs(x[1]), reverse=True)
+
+        remain_index = list(range(len(slots)))
+        scored_slots: List[Tuple[float, WorkingSlot]] = []
+        for t in range(k):
+            dim_idx = tmp[t][0]
+            slot_score_triplet = []
+
+            for idx in remain_index:
+                score = alpha * compute_overlap_score(query_text, slots[idx].summary, key_words) + (1 - alpha) * float((np.abs(U[idx, dim_idx]) / np.sum(np.abs(U[:, dim_idx]))))
+                slot_score_triplet.append((score, slots[idx], idx))
+            slot_score_triplet.sort(key=lambda x: x[0], reverse=True)
+            scored_slots.append((slot_score_triplet[0][0], slot_score_triplet[0][1]))
+
+            # delete the chosen slot
+            remain_index.remove(slot_score_triplet[0][2])
+        
+        return scored_slots[:k]
+            
+
         
     async def filter_and_route_slots(self) -> List[Dict[str, WorkingSlot]]:
         self.filtered_slot_container = []

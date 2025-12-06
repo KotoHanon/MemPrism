@@ -115,7 +115,7 @@ class Mem1Pipeline(Pipeline):
     def run_llm_loop(self, prompt, model="openai/gpt-4o-mini"):
         use_mem1 = self.inference_type == "mem1"
         use_ayumu = self.inference_type == "ayumu"
-        is_compress_memory = self.inference_type in ["mem1", "amem", "ayumu"]
+        is_compress_memory = self.inference_type in ["mem1", "amem", "ayumu", "normal"]
         is_collect_slot = self.inference_type == "ayumu"
 
         slots = []
@@ -172,7 +172,7 @@ class Mem1Pipeline(Pipeline):
             
             if is_compress_memory:
                 # clear all previous states by setting the cur_obs to empty
-                cur_obs = ""
+                cur_obs = prompt
             
 
             num_turns_left = MAX_ITERATION - iteration_cnt - 1
@@ -223,20 +223,13 @@ class AyumuPipeline(Pipeline):
         self.slots = slots
 
     def run_llm_loop(self, prompt, model):
-        use_mem1 = self.inference_type == "mem1"
-        use_ayumu = self.inference_type == "ayumu"
-        is_compress_memory = self.inference_type in ["mem1", "amem", "ayumu"]
-        is_collect_slot = self.inference_type == "ayumu"
+        use_ayumu = True
+        is_compress_memory = True
+        is_collect_slot = True
 
         cur_response = ""
         query_text = ""
-        if use_mem1:
-            # if mem1 model, we separate the prompt and cur_obs
-            # such tht cur_obs only stores the responses
-            cur_obs = ""
-        else:
-            # for other models, cur_obs stores the entire conversation trajectory
-            cur_obs = prompt
+        cur_obs = prompt
         iteration_cnt = 0
         # Initialize results tracking dictionary
         results_dict = {"q": prompt}
@@ -248,23 +241,17 @@ class AyumuPipeline(Pipeline):
             internal_state = extract_internal_state(cur_response, tag="think")
             print(f"[Debug] Iteration {iteration_cnt} Response: {cur_response}")
             
-            if not is_compress_memory:
-                memory = cur_obs[len(prompt):]
-            else:
-                memory = cur_obs
+            memory = cur_obs
             
             action_dict = act(cur_response)
             if self.llm_client.has_memory and memory: 
-                if self.inference_type == "amem":
-                    self.llm_client.memory_system.add_note(memory)
-                elif self.inference_type == "ayumu":
-                    if action_dict["type"] == "search":
-                        search_query = action_dict["query"].lower().strip()
-                        search_results = action_dict["content"]
-                        cur_turn_result = cur_response + search_results
-                        if search_query not in self.search_query_cache:
-                            self.search_query_cache.add(search_query)
-                            self.slots.extend(asyncio.run(self.llm_client.transfer_context_to_slots(context=memory)))
+                if action_dict["type"] == "search":
+                    search_query = action_dict["query"].lower().strip()
+                    search_results = action_dict["content"]
+                    cur_turn_result = cur_response + search_results
+                    if search_query not in self.search_query_cache:
+                        self.search_query_cache.add(search_query)
+                        self.slots.extend(asyncio.run(self.llm_client.transfer_context_to_slots(context=memory)))
             
             if internal_state:
                 # Store summary in results dictionary
