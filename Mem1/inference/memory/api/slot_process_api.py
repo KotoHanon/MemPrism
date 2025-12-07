@@ -50,58 +50,47 @@ class SlotProcess:
     def get_container_size(self) -> int:
         return len(self.slot_container)
 
-    def query(self, query_text: str, limit: int = 5, key_words: Optional[List[str]] = None) -> List[Tuple[float, WorkingSlot]]:
-        k = min(limit, len(self.slot_container))
+    def query(self, query_text: str, slots: Optional[List[WorkingSlot]] = None, limit: int = 5, key_words: Optional[List[str]] = None, use_svd: bool = False, embed_func = None, alpha: float = 0.9) -> List[Tuple[float, WorkingSlot]]:
+        if slots is None:
+            slots = list(self.slot_container.values())
 
-        scored_slots: List[Tuple[float, WorkingSlot]] = []
-        for slot in self.slot_container.values():
-            score = compute_overlap_score(query_text, slot.summary, key_words)
-            scored_slots.append((score, slot))
-        scored_slots.sort(key=lambda x: x[0], reverse=True)
-        
-        return scored_slots[:k]
-
-    def query_with_given_slots(self, query_text: str, slots: List[WorkingSlot], limit: int = 5, key_words: Optional[List[str]] = None) -> List[Tuple[float, WorkingSlot]]:
         k = min(limit, len(slots))
-
         scored_slots: List[Tuple[float, WorkingSlot]] = []
-        for slot in slots:
-            score = compute_overlap_score(query_text, slot.summary, key_words)
-            scored_slots.append((score, slot))
-        scored_slots.sort(key=lambda x: x[0], reverse=True)
+
+        if use_svd == False:
+            # Normal Retrieval
+            for slot in slots:
+                score = compute_overlap_score(query_text, slot.summary, key_words)
+                scored_slots.append((score, slot))
+            scored_slots.sort(key=lambda x: x[0], reverse=True)
         
+        else:
+            # Reduced-SVD-based Retrieval
+            assert embed_func is not None, "Embedding function must be provided when use_svd is True."
+            query_emb = embed_func([query_text]) # [1, dim]
+            slot_embs = embed_func([slot.summary for slot in slots]) # [n, dim]
+            U, S, Vt = np.linalg.svd(slot_embs, full_matrices=False) # [n, dim] -> U[n, r], S: [r,], Vt: [r, dim]
+            Sigma = np.diag(S)
+
+            Z = (query_emb @ Vt.T).ravel()  # -> (r,)
+            tmp = [(i, z_i) for i, z_i in enumerate(Z)]
+            tmp.sort(key=lambda x : abs(x[1]), reverse=True)
+
+            remain_index = list(range(len(slots)))
+            for t in range(k):
+                dim_idx = tmp[t][0]
+                slot_score_triplet = []
+
+                for idx in remain_index:
+                    score = alpha * compute_overlap_score(query_text, slots[idx].summary, key_words) + (1 - alpha) * float((np.abs(U[idx, dim_idx]) / np.sum(np.abs(U[:, dim_idx]))))
+                    slot_score_triplet.append((score, slots[idx], idx))
+                slot_score_triplet.sort(key=lambda x: x[0], reverse=True)
+                scored_slots.append((slot_score_triplet[0][0], slot_score_triplet[0][1]))
+
+                # delete the chosen slot
+                remain_index.remove(slot_score_triplet[0][2])
+
         return scored_slots[:k]
-
-    def query_by_reduced_svd(self, query_text: str, embed_func, slots: List[WorkingSlot], limit: int = 5, key_words: Optional[List[str]] = None, alpha: float = 0.9) -> List[Tuple[float, WorkingSlot]]:
-        k = min(limit, len(slots))
-
-        query_emb = embed_func([query_text]) # [1, dim]
-        slot_embs = embed_func([slot.summary for slot in slots]) # [n, dim]
-        U, S, Vt = np.linalg.svd(slot_embs, full_matrices=False) # [n, dim] -> U[n, r], S: [r,], Vt: [r, dim]
-        Sigma = np.diag(S)
-
-        Z = (query_emb @ Vt.T).ravel()  # -> (r,)
-        tmp = [(i, z_i) for i, z_i in enumerate(Z)]
-        tmp.sort(key=lambda x : abs(x[1]), reverse=True)
-
-        remain_index = list(range(len(slots)))
-        scored_slots: List[Tuple[float, WorkingSlot]] = []
-        for t in range(k):
-            dim_idx = tmp[t][0]
-            slot_score_triplet = []
-
-            for idx in remain_index:
-                score = alpha * compute_overlap_score(query_text, slots[idx].summary, key_words) + (1 - alpha) * float((np.abs(U[idx, dim_idx]) / np.sum(np.abs(U[:, dim_idx]))))
-                slot_score_triplet.append((score, slots[idx], idx))
-            slot_score_triplet.sort(key=lambda x: x[0], reverse=True)
-            scored_slots.append((slot_score_triplet[0][0], slot_score_triplet[0][1]))
-
-            # delete the chosen slot
-            remain_index.remove(slot_score_triplet[0][2])
-        
-        return scored_slots[:k]
-            
-
         
     async def filter_and_route_slots(self) -> List[Dict[str, WorkingSlot]]:
         self.filtered_slot_container = []

@@ -104,24 +104,15 @@ class Pipeline(ABC):
 
 
 class Mem1Pipeline(Pipeline):
-    def __init__(self, llm_client, inference_type: Literal["normal", "amem", "mem1", "ayumu"], abstract_memories: bool = False):
+    def __init__(self, llm_client, inference_type: Literal["normal", "amem" "mem1"]):
         super().__init__(llm_client)
         self.inference_type = inference_type
-        self.abstract_memories = abstract_memories
-        if self.inference_type == "ayumu":
-            self.working_slots = []
-        
         
     def run_llm_loop(self, prompt, model="openai/gpt-4o-mini"):
         use_mem1 = self.inference_type == "mem1"
-        use_ayumu = self.inference_type == "ayumu"
-        is_compress_memory = self.inference_type in ["mem1", "amem", "ayumu", "normal"]
-        is_collect_slot = self.inference_type == "ayumu"
-
-        slots = []
+        is_compress_memory = self.inference_type in ["amem", "mem1"]
 
         cur_response = ""
-        query_text = ""
         if use_mem1:
             # if mem1 model, we separate the prompt and cur_obs
             # such tht cur_obs only stores the responses
@@ -137,32 +128,18 @@ class Mem1Pipeline(Pipeline):
             # make summary and update the observation
             if use_mem1:
                 cur_response = self.llm_client.make_completion(prompt, cur_obs, model=model, is_last_turn=iteration_cnt == MAX_ITERATION - 1)
-            elif use_ayumu:
-                cur_response = self.llm_client.generate_response(query_text=query_text, slots=slots, prompt=cur_obs, model=model)
             else:
                 cur_response = self.llm_client.generate_response(cur_obs, model=model)
 
             # for the current implementation, use <think></think> for storing the internal state
             internal_state = extract_internal_state(cur_response, tag="think")
-            print(f"[Debug] Iteration {iteration_cnt} Response: {cur_response}")
             
             if not is_compress_memory:
                 memory = cur_obs[len(prompt):]
             else:
                 memory = cur_obs
-            
-            action_dict = act(cur_response)
-            if self.llm_client.has_memory and memory: 
-                if self.inference_type == "amem":
-                    self.llm_client.memory_system.add_note(memory)
-                elif self.inference_type == "ayumu":
-                    if action_dict["type"] == "search":
-                        search_query = action_dict["query"].lower().strip()
-                        search_results = action_dict["content"]
-                        cur_turn_result = cur_response + search_results
-                        if search_query not in self.search_query_cache:
-                            self.search_query_cache.add(search_query)
-                            slots.extend(asyncio.run(self.llm_client.transfer_context_to_slots(context=memory)))
+            if self.llm_client.has_memory and memory:
+                self.llm_client.memory_system.add_note(memory)
             
             if internal_state:
                 # Store summary in results dictionary
@@ -174,6 +151,7 @@ class Mem1Pipeline(Pipeline):
                 # clear all previous states by setting the cur_obs to empty
                 cur_obs = prompt
             
+            action_dict = act(cur_response)
 
             num_turns_left = MAX_ITERATION - iteration_cnt - 1
             if num_turns_left > 1:
@@ -184,10 +162,6 @@ class Mem1Pipeline(Pipeline):
             if action_dict is None:
                 return None, results_dict
             elif action_dict["type"] == "search":
-                if is_collect_slot and num_turns_left == 0: # collect slots for transfering at the end
-                    for slot in self.llm_client.slot_process.slot_container.values():
-                        self.working_slots.append(slot)
-                    #asyncio.run(self.llm_client.transfer_slots_to_memories(is_abstract=self.abstract_memories))
                 search_results = action_dict["content"]
                 search_results = f"<information>\n{hint}\n{search_results}\n</information>"
                 # Store search query in results dictionary
@@ -198,14 +172,8 @@ class Mem1Pipeline(Pipeline):
                 else:
                     results_dict[f"i{iteration_cnt}"] = search_results
                 next_obs = cur_obs + cur_response + search_results
-                query_text = action_dict["query"]
             elif action_dict["type"] == "answer":
                 # Store final answer in results dictionary
-                if is_collect_slot: # collect slots for transfering at the end
-                    #asyncio.run(self.llm_client.transfer_context_to_memories(is_abstract=self.abstract_memories))
-                    for slot in self.llm_client.slot_process.slot_container.values():
-                        self.working_slots.append(slot)
-                query_text = ""
                 results_dict[f"r{iteration_cnt}"] = cur_response
                 return action_dict["content"], results_dict
             cur_obs = next_obs
@@ -213,6 +181,76 @@ class Mem1Pipeline(Pipeline):
             iteration_cnt += 1
         
         return None, results_dict
+
+class Mem0Pipeline(Pipeline):
+    def __init__(self, llm_client):
+        super().__init__(llm_client)
+        
+    def run_llm_loop(self, prompt, model="openai/gpt-4o-mini"):
+        is_compress_memory = True
+
+        cur_response = ""
+        query_text = ""
+        memory = ""
+        cur_obs = prompt
+        iteration_cnt = 0
+        # Initialize results tracking dictionary
+        results_dict = {"q": prompt}
+
+        while iteration_cnt < MAX_ITERATION:
+            # make summary and update the observation
+            cur_response = self.llm_client.generate_response(query_text, cur_obs, model=model)
+
+            # for the current implementation, use <think></think> for storing the internal state
+            internal_state = extract_internal_state(cur_response, tag="think")
+            print(f"[Debug] Iteration {iteration_cnt} Response: {cur_response}")
+            
+            action_dict = act(cur_response)
+            if self.llm_client.has_memory and memory:
+                try:
+                    self.llm_client.memory_system.add(memory, user_id="agent", infer=False)
+                except Exception as e:
+                    print(f"[Warning] Failed to add memory: {e}") 
+            
+            if internal_state:
+                # Store summary in results dictionary
+                results_dict[f"t{iteration_cnt}"] = internal_state
+            else:
+                results_dict[f"t{iteration_cnt}"] = ""
+
+            cur_obs = prompt
+            
+            num_turns_left = MAX_ITERATION - iteration_cnt - 1
+            if num_turns_left > 1:
+                hint = f"[HINT]You have {num_turns_left} turns left.[/HINT]"
+            else:
+                hint = f"[HINT]You have {num_turns_left} turn left. You must answer the question now.[/HINT]"
+
+            if action_dict is None:
+                return None, results_dict
+            elif action_dict["type"] == "search":
+                search_results = action_dict["content"]
+                search_results = f"<information>\n{hint}\n{search_results}\n</information>"
+                # Store search query in results dictionary
+                results_dict[f"r{iteration_cnt}"] = cur_response
+                # Store information in results dictionary
+                if iteration_cnt == MAX_ITERATION - 1:
+                    results_dict[f"i{iteration_cnt}"] = ""
+                else:
+                    results_dict[f"i{iteration_cnt}"] = search_results
+                memory = search_results
+                next_obs = cur_obs + cur_response + search_results
+                query_text = action_dict["query"]
+            elif action_dict["type"] == "answer":
+                # Store final answer in results dictionary
+                query_text = ""
+                results_dict[f"r{iteration_cnt}"] = cur_response
+                return action_dict["content"], results_dict
+            cur_obs = next_obs
+
+            iteration_cnt += 1
+        
+        return None, results_dict    
 
 class AyumuPipeline(Pipeline):
     def __init__(self, llm_client, inference_type: Literal["normal", "amem", "mem1", "ayumu"], slots, abstract_memories: bool = False):

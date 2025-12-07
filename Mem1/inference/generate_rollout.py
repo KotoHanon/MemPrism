@@ -6,11 +6,11 @@ random.seed(42)
 np.random.seed(42)
 
 pd.options.display.max_columns = 100
-from models import LiteLLMClient, AMemClient, VLLMOpenAIClient, AyumuClient
+from models import LiteLLMClient, AMemClient, VLLMOpenAIClient, AyumuClient, Mem0Client
 import argparse
 import json
 import numpy as np
-from data_pipelines import Mem1Pipeline, AyumuPipeline, model_estimated_match
+from data_pipelines import Mem1Pipeline, Mem0Pipeline, AyumuPipeline, model_estimated_match
 import sys
 try:
     sys.path.append("..")
@@ -93,10 +93,14 @@ if __name__ == "__main__":
                         help="Use Ayumu client")
     parser.add_argument("--use_amem", action="store_true", default=False,
                         help="Use Agentic Memory client")
+    parser.add_argument("--use_mem0", action="store_true", default=False,
+                        help="Use mem0 inference style")
     parser.add_argument("--use_mem1", action="store_true", default=False,
                         help="Use mem1 inference style")
     parser.add_argument("--use_litellm", action="store_true", default=False,
                         help="Use LiteLLM client")
+    parser.add_argument("--use_graph", action="store_true", default=False,
+                        help="Use graph memory in Mem0Client")
     parser.add_argument("--abstract_memories", action="store_true", default=False,
                         help="Use abstract memories (only for ayumu)")
     parser.add_argument("--max_workers", type=int, default=1,
@@ -117,10 +121,13 @@ if __name__ == "__main__":
         inference_type = "mem1"
     elif args.use_amem:
         inference_type = "amem"
+    elif args.use_mem0:
+        inference_type = "mem0"
     else:
         inference_type = "normal"
 
     assert not(not(args.use_ayumu) and args.abstract_memories), "Abstract memories can only be used with Ayumu"
+    assert not(not(args.use_mem0) and args.use_graph), "Graph memory can only be used with Mem0Client"
 
     if args.resume_file:
         file_path = args.resume_file
@@ -168,7 +175,10 @@ if __name__ == "__main__":
         client.reset()
         try:
             prompt = row["prompt"][0]["content"]
-            pipeline = Mem1Pipeline(client, inference_type=inference_type, abstract_memories=args.abstract_memories)
+            if inference_type == "mem0":
+                pipeline = Mem0Pipeline(client)
+            else:
+                pipeline = Mem1Pipeline(client, inference_type=inference_type)
             answer, results_dict = pipeline.run_llm_loop(prompt, model=model)
             logger.info(f"Generated answer: {answer}, Golden answer: {row['reward_model']['ground_truth']}")
 
@@ -332,6 +342,12 @@ if __name__ == "__main__":
         for row in tqdm(row_data):
             process_row(row)
 
+        '''elif args.use_mem0:
+        llm_client = Mem0Client()
+        row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
+        for row in tqdm(row_data):
+            process_row(row)'''
+
     elif args.use_ayumu:
         max_workers = args.max_workers
         llm_client = AyumuClient()
@@ -373,6 +389,8 @@ if __name__ == "__main__":
     else:
         if args.use_mem1:
             llm_client = VLLMOpenAIClient()
+        elif args.use_mem0:
+            llm_client = Mem0Client(use_graph=use_graph)
         else:
             llm_client = LiteLLMClient()
         # otherwise we can use parallel workers

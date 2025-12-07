@@ -215,7 +215,6 @@ class AMemClient(BaseClient):
         )
         self.memories = []
 
-
     def chat_with_memories(self, message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
         # Retrieve relevant memories
         relevant_memories = self.memory_system.search_agentic(message, k=3)
@@ -247,10 +246,8 @@ class AMemClient(BaseClient):
 
         return assistant_response
 
-
     def generate_response(self, prompt, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
         return self.chat_with_memories(prompt, model=model, temperature=temperature, force_json=force_json)
-
 
     @property
     def has_memory(self):
@@ -263,6 +260,103 @@ class AMemClient(BaseClient):
             llm_model="gpt-4o-mini"         # LLM model name
         )
         self.memories = []
+
+
+class Mem0Client(BaseClient):
+    def __init__(self, use_graph: bool = False):
+        assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
+        #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
+        litellm.drop_params = True
+        # Initialize the memory system 🚀
+        from mem0 import Memory
+        if use_graph:
+            # TODO
+            self.config = {}
+        else:
+            self.config = {
+                "llm": {
+                    "provider": "openai",
+                    "config": {
+                        "model": "gpt-4o-mini",
+                        "temperature": 0.01,
+                        "max_tokens": 2000,
+                    }
+                },
+                "vector_store": {
+                    "provider": "faiss",
+                    "config": {
+                        "collection_name": "test",
+                        "path": "/tmp/faiss_memories",
+                        "distance_strategy": "euclidean"
+                    }
+                },
+                "embedder": {
+                    "provider": "openai",
+                    "config": {
+                        "model": "text-embedding-3-small"
+                    }
+                },
+                "memory": {
+                    "auto_embed": True,
+                    "summarization": True,
+                },
+            }
+        self.memory_system = Memory.from_config(self.config)
+        self.memories = []
+
+    def chat_with_memories(self, query_text: str, message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
+        # Retrieve relevant memories
+        try:
+            returns = self.memory_system.search(message, user_id="agent", limit=3)
+            print("Raw returns from memory search:", returns)
+            if isinstance(returns, list):
+                relevant_memories = returns
+            else:
+                relevant_memories = returns['results']
+        except Exception as e:
+            print("[Error] Memory search failed:", repr(e))
+            relevant_memories = []
+        
+        memories_str = "\n".join(f"- {entry['memory']}" for entry in relevant_memories)
+        self.memories.append(memories_str)
+        # Generate Assistant response
+        system_prompt = f"You are a helpful AI. Answer the question based on query and memories.\nUser Memories:\n{memories_str}"
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": message}]
+
+        config = {
+            "temperature": temperature, 
+            "top_p": 0.95,
+            "provider": {
+                "sort": "throughput"
+            }
+        }
+        if force_json:
+            config["response_format"] = {"type": "json_object"}
+        
+        if model.startswith("openai/"):
+            config.pop("provider")
+        
+        if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model
+        
+        response = litellm.completion(model=model, messages=messages, **config)
+        assistant_response = response.choices[0].message.content.strip()
+
+        return assistant_response
+
+    def generate_response(self, query_text, prompt, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
+        return self.chat_with_memories(query_text=query_text, message=prompt, model=model, temperature=temperature, force_json=force_json)
+
+    @property
+    def has_memory(self):
+        return True
+
+    def reset(self):
+        '''from mem0 import Memory
+        self.memory_system = Memory.from_config(self.config)
+        self.memories = []'''
+        pass
+
 
 class AyumuClient(BaseClient):
     def __init__(self):
@@ -278,17 +372,16 @@ class AyumuClient(BaseClient):
         self.semantic_memories = []
         self.episodic_memories = []
 
-
     def chat_with_memories(self, query_text: str, slots: List[WorkingSlot], message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user", threshold: float = 0.4) -> str:
         # Retrieve relevant memories
-        slot_query_limit = min(3, self.slot_process.get_container_size())
+        slot_query_limit = min(5, self.slot_process.get_container_size())
         sem_query_limit = min(3, self.semantic_memory_system.size // 3)
         epi_query_limit = min(3, self.episodic_memory_system.size // 3)
         if len(query_text) > 0:
-            relevant_slots = self.slot_process.query_by_reduced_svd(query_text=message, embed_func=self.semantic_memory_system.vector_store._embed, slots=slots, limit=slot_query_limit, key_words=query_text.split())
-            #relevant_slots = self.slot_process.query_with_given_slots(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split())
+            #relevant_slots = self.slot_process.query(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split())
+            relevant_slots = self.slot_process.query(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split(), use_svd=True, embed_func=self.semantic_memory_system.vector_store._embed)
             relevant_semantic_memories = self.semantic_memory_system.query(query_text=query_text, limit=sem_query_limit, threshold=threshold)
-            relevant_episodic_memories = self.episodic_memory_system.query(query_text=query_text, limit=epi_query_limit, threshold=threshold)
+            relevant_episodic_memories = self.episodic_memory_system.query(query_text=query_text, limit=epi_query_limit)
             
         else:
             relevant_slots = []
@@ -296,13 +389,13 @@ class AyumuClient(BaseClient):
             relevant_episodic_memories = []
 
         if len(relevant_slots) > 0:
-            logger.info(f"Query Text: {message}, key_words: {query_text.split()}, 1st retrieved slot: {relevant_slots[0][1].summary}")
+            logger.info(f"Query Text: {message}, key_words: {query_text.split()}, 1st retrieved slot: {_safe_dump_str(relevant_slots[0][1])}")
         if len(relevant_semantic_memories) > 0:
             logger.info(f"Query Text: {query_text}, 1st retrieved semantic memory: {relevant_semantic_memories[0][1].summary}")
         if len(relevant_episodic_memories) > 0:
             logger.info(f"Query Text: {query_text}, 1st retrieved episodic memory: {relevant_episodic_memories[0][1].detail}")
 
-        slots_str = "\n".join(f"- {_safe_dump_str(entry[1].summary)}" for entry in relevant_slots)
+        slots_str = "\n".join(f"- {_safe_dump_str(entry[1])}" for entry in relevant_slots)
         semantic_memories_str = "\n".join(f"- {entry[1].summary}" for entry in relevant_semantic_memories)
         episodic_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].detail)}" for entry in relevant_episodic_memories)
         self.retrieved_working_slots.append(slots_str)
@@ -336,7 +429,7 @@ class AyumuClient(BaseClient):
     def generate_response(self, query_text, slots, prompt, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
         return self.chat_with_memories(query_text=query_text, slots=slots, message=prompt, model=model, temperature=temperature, force_json=force_json)
 
-    async def transfer_context_to_slots(self, context: str, max_slots: int = 3) -> Optional[List[WorkingSlot]]:
+    async def transfer_context_to_slots(self, context: str, max_slots: int = 5) -> Optional[List[WorkingSlot]]:
         print("[Info] Transferring context to working slots...")
 
         try:
