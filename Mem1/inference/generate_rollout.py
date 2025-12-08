@@ -342,12 +342,12 @@ if __name__ == "__main__":
         for row in tqdm(row_data):
             process_row(row)
 
-    elif args.use_mem0 and args.use_graph:
-        # we must run in a single thread for Memo-Graph
-        llm_client = Mem0Client(use_graph=args.use_graph)
-        row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
-        for row in tqdm(row_data):
-            process_row(row)
+        '''elif args.use_mem0 and args.use_graph:
+            # we must run in a single thread for Memo-Graph
+            llm_client = Mem0Client(use_graph=args.use_graph)
+            row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
+            for row in tqdm(row_data):
+                process_row(row)'''
 
     elif args.use_ayumu:
         max_workers = args.max_workers
@@ -390,7 +390,7 @@ if __name__ == "__main__":
     else:
         if args.use_mem1:
             llm_client = VLLMOpenAIClient()
-        elif args.use_mem0 and not args.use_graph:
+        elif args.use_mem0:
             llm_client = Mem0Client(use_graph=args.use_graph)
         else:
             llm_client = LiteLLMClient()

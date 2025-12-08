@@ -6,6 +6,7 @@ import random
 from openai import OpenAI
 import os
 import asyncio
+import threading
 from memory.memory_system.working_slot import WorkingSlot
 TOP_K = 3
 SEARCH_URL = "http://127.0.0.1:8013/retrieve"
@@ -185,6 +186,7 @@ class Mem1Pipeline(Pipeline):
 class Mem0Pipeline(Pipeline):
     def __init__(self, llm_client):
         super().__init__(llm_client)
+        self.mem_lock = threading.Lock()
         
     def run_llm_loop(self, prompt, model="openai/gpt-4o-mini"):
         is_compress_memory = True
@@ -208,7 +210,8 @@ class Mem0Pipeline(Pipeline):
             action_dict = act(cur_response)
             if self.llm_client.has_memory and memory:
                 try:
-                    self.llm_client.memory_system.add(memory, user_id="agent", infer=False)
+                    with self.mem_lock:
+                        self.llm_client.memory_system.add(memory, user_id="agent", infer=False)
                 except Exception as e:
                     print(f"[Warning] Failed to add memory: {e}") 
             

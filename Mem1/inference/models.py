@@ -22,6 +22,7 @@ from memory.memory_system.utils import (
     now_iso,
 )
 from memory.memory_system.models import EpisodicRecord, SemanticRecord
+from mem0 import Memory
 from datetime import datetime
 import os
 from tqdm import tqdm
@@ -271,9 +272,8 @@ class Mem0Client(BaseClient):
         kuzu_root = "/tmp/kuzu_graphs"
         os.makedirs(faiss_root, exist_ok=True)
         os.makedirs(kuzu_root, exist_ok=True)
-        store_time = datetime.now().strftime("store_%Y%m%d_%H%M%S")
+        store_time = f"store_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         # Initialize the memory system 🚀
-        from mem0 import Memory
         self.config = {
                 "llm": {
                     "provider": "openai",
@@ -363,10 +363,11 @@ class Mem0Client(BaseClient):
         return True
 
     def reset(self):
-        '''from mem0 import Memory
+        store_time = f"store_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.config["vector_store"]["config"]["path"] = os.path.join("/tmp/faiss_memories", store_time)
+        self.config["graph_store"]["config"]["db"] = os.path.join("/tmp/kuzu_graphs", store_time)
         self.memory_system = Memory.from_config(self.config)
-        self.memories = []'''
-        pass
+        self.memories = []
 
 
 class AyumuClient(BaseClient):
