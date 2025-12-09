@@ -7,6 +7,7 @@ from openai import OpenAI
 import os
 import asyncio
 import threading
+import itertools
 from memory.memory_system.working_slot import WorkingSlot
 TOP_K = 3
 SEARCH_URL = "http://127.0.0.1:8013/retrieve"
@@ -68,6 +69,7 @@ def extract_internal_state(response: str, tag: str):
         return f"<{tag}>{istate}</{tag}>"
     else:
         return None
+
 
 def model_estimated_match(answer, golden_answer, question, _):
     prompt = f"""
@@ -187,6 +189,7 @@ class Mem0Pipeline(Pipeline):
     def __init__(self, llm_client):
         super().__init__(llm_client)
         self.mem_lock = threading.Lock()
+        self.thread_name = threading.current_thread().name
         
     def run_llm_loop(self, prompt, model="openai/gpt-4o-mini"):
         is_compress_memory = True
@@ -201,7 +204,7 @@ class Mem0Pipeline(Pipeline):
 
         while iteration_cnt < MAX_ITERATION:
             # make summary and update the observation
-            cur_response = self.llm_client.generate_response(query_text, cur_obs, model=model)
+            cur_response = self.llm_client.generate_response(query_text, cur_obs, thread_name=self.thread_name, model=model)
 
             # for the current implementation, use <think></think> for storing the internal state
             internal_state = extract_internal_state(cur_response, tag="think")
@@ -211,7 +214,7 @@ class Mem0Pipeline(Pipeline):
             if self.llm_client.has_memory and memory:
                 try:
                     with self.mem_lock:
-                        self.llm_client.memory_system.add(memory, user_id="agent", infer=False)
+                        self.llm_client.memory_system.add(memory, user_id=f"agent_{self.thread_name}", infer=False)
                 except Exception as e:
                     print(f"[Warning] Failed to add memory: {e}") 
             

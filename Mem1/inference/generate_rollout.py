@@ -83,19 +83,6 @@ def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-def get_thread_llm_client(args):
-    thread_local = threading.local()
-    client = getattr(thread_local, "llm_client", None)
-    if client is None:
-        if args.use_mem1:
-            client = VLLMOpenAIClient()
-        elif args.use_mem0:
-            client = Mem0Client(use_graph=args.use_graph)
-        else:
-            client = LiteLLMClient()
-        thread_local.llm_client = client
-    return client
-
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -188,7 +175,10 @@ if __name__ == "__main__":
         client.reset()
         try:
             prompt = row["prompt"][0]["content"]
-            pipeline = Mem1Pipeline(client, inference_type=inference_type)
+            if args.use_mem0:
+                pipeline = Mem0Pipeline(client)
+            else:
+                pipeline = Mem1Pipeline(client, inference_type=inference_type)
             answer, results_dict = pipeline.run_llm_loop(prompt, model=model)
             logger.info(f"Generated answer: {answer}, Golden answer: {row['reward_model']['ground_truth']}")
 
@@ -262,87 +252,6 @@ if __name__ == "__main__":
                     json.dump(result_dict, f, indent=None, ensure_ascii=False, default=json_serialize_helper)
                     f.write('\n')
             return index
-
-    def process_row_for_mem0(func_args):
-        index, row, args, model = func_args
-        # We assign a thread-local llm client for Mem0
-        client = get_thread_llm_client(args)
-        try:
-            prompt = row["prompt"][0]["content"]
-            pipeline = Mem0Pipeline(client)
-            answer, results_dict = pipeline.run_llm_loop(prompt, model=model)
-            logger.info(f"Generated answer: {answer}, Golden answer: {row['reward_model']['ground_truth']}")
-
-            if "multi" in args.data_file:
-                answers = str(answer).split(";")
-                ground_truths = row['reward_model']['ground_truth']['target']
-                exact_match = 0
-                for idx, gt in enumerate(ground_truths):
-
-                    gt = gt[0]
-                    try:
-                        if str(answers[idx]).lower().strip() in str(gt).lower().strip() or str(gt).lower().strip() in str(answers[idx]).lower().strip():
-                            exact_match += 1
-                        else:
-                            exact_match += 0
-                    except Exception as e:
-                        exact_match = 0
-                        break
-                if exact_match == len(ground_truths):
-                    print(f"Test {index} passed")
-                else:
-                    print(f"Test {index} failed")
-            else:
-                if str(answer).lower().strip() in str(row['reward_model']['ground_truth']).lower().strip():
-                    print(f"Test {index} passed")
-                    exact_match = True
-                else:
-                    print(f"Test {index} failed")
-                    exact_match = False
-            results_dict["index"] = index
-            results_dict["hash"] = row["hash"]
-            if "multi" in args.data_file:
-                results_dict['Golden_answer'] = row['reward_model']['ground_truth']['target']
-            else:
-                results_dict['Golden_answer'] = row['golden_answers']
-            results_dict['Exact_match'] = exact_match
-
-            if client.has_memory:
-                results_dict['memories'] = client.memories
-            
-            try:
-                if "multi" in args.data_file:
-                    results_dict['Model_estimated_match'] = model_estimated_match(answer, row['reward_model']['ground_truth']['target'], prompt, client)
-                else:
-                    results_dict['Model_estimated_match'] = model_estimated_match(answer, row['golden_answers'], prompt, client)
-            except Exception as e:
-                results_dict['Model_estimated_match'] = False
-            
-            # Thread-safe append to the results list
-            with results_lock:
-                # add the entry
-                with open(file_path, 'a', encoding='utf-8') as f:
-                    json.dump(results_dict, f, indent=None, ensure_ascii=False, default=json_serialize_helper)
-                    f.write('\n')
-            
-            return index
-        except Exception as e:
-            # Add minimal error information to results
-            result_dict = {
-                    'index': index,
-                    'hash': row["hash"],
-                    'error': str(e),
-                    'question': row.get('question', 'Unknown'),
-                    'Golden_answer': row.get('golden_answers', 'Unknown'),
-                    'Exact_match': False,
-                    'Model_estimated_match': False
-                }
-            with results_lock:
-                with open(file_path, 'a', encoding='utf-8') as f:
-                    json.dump(result_dict, f, indent=None, ensure_ascii=False, default=json_serialize_helper)
-                    f.write('\n')
-            return index
-
 
     def process_row_for_ayumu(func_args):
         index, row, client, model = func_args
@@ -473,15 +382,12 @@ if __name__ == "__main__":
 
             print(f"[Info] Semantic memory size: {llm_client.semantic_memory_system.size}")
             print(f"[Info] Episodic memory size: {llm_client.episodic_memory_system.size}")
-
-    elif args.use_mem0:
-        row_data = [(index, row, args, args.model) for index, row in train_data.iterrows()]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            list(tqdm(executor.map(process_row_for_mem0, row_data), total=len(row_data)))
             
     else:
         if args.use_mem1:
             llm_client = VLLMOpenAIClient()
+        elif args.use_mem0:
+            llm_client = Mem0Client(use_graph=args.use_graph)
         else:
             llm_client = LiteLLMClient()
         # otherwise we can use parallel workers

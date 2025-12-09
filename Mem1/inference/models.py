@@ -316,10 +316,10 @@ class Mem0Client(BaseClient):
         self.memory_system = Memory.from_config(self.config)
         self.memories = []
 
-    def chat_with_memories(self, query_text: str, message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
+    def chat_with_memories(self, query_text: str, message: str, thread_name: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
         # Retrieve relevant memories
         try:
-            returns = self.memory_system.search(message, user_id="agent", limit=3)
+            returns = self.memory_system.search(message, user_id=f"agent_{thread_name}", limit=3)
             print("Raw returns from memory search:", returns)
             if isinstance(returns, list):
                 relevant_memories = returns
@@ -356,18 +356,14 @@ class Mem0Client(BaseClient):
 
         return assistant_response
 
-    def generate_response(self, query_text, prompt, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
-        return self.chat_with_memories(query_text=query_text, message=prompt, model=model, temperature=temperature, force_json=force_json)
+    def generate_response(self, query_text: str, prompt: str, thread_name: str, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
+        return self.chat_with_memories(query_text=query_text, message=prompt, thread_name=thread_name, model=model, temperature=temperature, force_json=force_json)
 
     @property
     def has_memory(self):
         return True
 
     def reset(self):
-        store_time = f"store_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
-        self.config["vector_store"]["config"]["path"] = os.path.join("/tmp/faiss_memories", store_time)
-        self.config["graph_store"]["config"]["db"] = os.path.join("/tmp/kuzu_graphs", store_time)
-        self.memory_system = Memory.from_config(self.config)
         self.memories = []
 
 
@@ -507,9 +503,19 @@ class AyumuClient(BaseClient):
             await self.abstract_episodic_records_to_semantic_record(episodic_records)
 
         if len(semantic_records) > 0:
-            self.semantic_memory_system.add(semantic_records)
+            try:
+                self.semantic_memory_system.upsert_normal_records(semantic_records)
+            except Exception as e:
+                import traceback
+                print("[ERROR] upsert_normal_records for semantic_records failed:", repr(e))
+                traceback.print_exc()
         if len(episodic_records) > 0:
-            self.episodic_memory_system.add(episodic_records)
+            try:
+                self.episodic_memory_system.upsert_normal_records(episodic_records)
+            except Exception as e:
+                import traceback
+                print("[ERROR] upsert_normal_records for episodic_records failed:", repr(e))
+                traceback.print_exc()
 
     async def load_inputs_to_memory_records(self, inputs: List[Dict[str, Any]]):
         if not inputs or len(inputs) == 0:
