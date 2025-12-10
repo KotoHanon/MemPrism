@@ -342,7 +342,7 @@ if __name__ == "__main__":
             process_row(row)
 
     elif args.use_ayumu:
-        llm_client = AyumuClient(args.use_local_model)
+        llm_client = AyumuClient(args.model, args.use_local_model)
         row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
         for batch in chunks(row_data, max_workers):
             try:

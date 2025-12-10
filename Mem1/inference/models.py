@@ -139,8 +139,8 @@ class LiteLLMClient(BaseClient):
             # drop provider
             config.pop("provider")
 
-        if not model.startswith("openrouter/") and not model.startswith("openai/"):
-            model = "openrouter/" + model
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
 
         try: 
             # Format messages properly with content type
@@ -176,8 +176,8 @@ class LiteLLMClient(BaseClient):
             # drop provider
             config.pop("provider")
 
-        if not model.startswith("openrouter/") and not model.startswith("openai/"):
-            model = "openrouter/" + model
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
 
         try: 
             # Format messages properly with content type
@@ -220,7 +220,10 @@ class AMemClient(BaseClient):
         if self.use_local_model:
             self.url = "http://localhost:8014"
             self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
-
+        else:
+            assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
+            #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
+    
     def chat_with_memories(self, message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
         # Retrieve relevant memories
         relevant_memories = self.memory_system.search_agentic(message, k=3)
@@ -244,8 +247,8 @@ class AMemClient(BaseClient):
         if model.startswith("openai/"):
             config.pop("provider")
         
-        if not model.startswith("openrouter/") and not model.startswith("openai/"):
-            model = "openrouter/" + model
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
 
         if self.use_local_model:
             # Use local vLLM server for inference
@@ -254,7 +257,7 @@ class AMemClient(BaseClient):
                 json={
                     "model": model,
                     "temperature": temperature,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "stop": ["</search>", "</answer>"]
                 }
             )
@@ -294,8 +297,6 @@ class AMemClient(BaseClient):
 
 class Mem0Client(BaseClient):
     def __init__(self, use_local_model: bool = False, use_graph: bool = False):
-        assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
-        #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
         litellm.drop_params = True
         faiss_root = "/tmp/faiss_memories"
         kuzu_root = "/tmp/kuzu_graphs"
@@ -347,6 +348,9 @@ class Mem0Client(BaseClient):
         if self.use_local_model:
             self.url = "http://localhost:8014"
             self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+        else:
+            assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
+            #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"        
 
     def chat_with_memories(self, query_text: str, message: str, thread_name: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user") -> str:
         # Retrieve relevant memories
@@ -380,8 +384,8 @@ class Mem0Client(BaseClient):
         if model.startswith("openai/"):
             config.pop("provider")
         
-        if not model.startswith("openrouter/") and not model.startswith("openai/"):
-            model = "openrouter/" + model
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
         
         if self.use_local_model:
             # Use local vLLM server for inference
@@ -390,7 +394,7 @@ class Mem0Client(BaseClient):
                 json={
                     "model": model,
                     "temperature": temperature,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "stop": ["</search>", "</answer>"]
                 }
             )
@@ -424,9 +428,7 @@ class Mem0Client(BaseClient):
 
 
 class AyumuClient(BaseClient):
-    def __init__(self, use_local_model: bool = False):
-        assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
-        #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
+    def __init__(self, model: str = "gpt-4o-mini", use_local_model: bool = False):
         litellm.drop_params = True
         # Initialize the memory system 🚀
         self.slot_process = SlotProcess()
@@ -441,6 +443,15 @@ class AyumuClient(BaseClient):
         if self.use_local_model:
             self.url = "http://localhost:8014"
             self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+            self.slot_process = SlotProcess(llm_name=model, llm_backend="vllm")
+            self.semantic_memory_system = FAISSMemorySystem(memory_type="semantic", llm_name=model, llm_backend="vllm")
+            self.episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_name=model, llm_backend="vllm")
+        else:
+            assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
+            #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
+            self.slot_process = SlotProcess(llm_name=model, llm_backend="openai")
+            self.semantic_memory_system = FAISSMemorySystem(memory_type="semantic", llm_name=model, llm_backend="openai")
+            self.episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_name=model, llm_backend="openai")
 
     def chat_with_memories(self, query_text: str, slots: List[WorkingSlot], message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user", threshold: float = 0.4) -> str:
         # Retrieve relevant memories
@@ -488,8 +499,8 @@ class AyumuClient(BaseClient):
         if model.startswith("openai/"):
             config.pop("provider")
         
-        if not model.startswith("openrouter/") and not model.startswith("openai/"):
-            model = "openrouter/" + model
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
         
         if self.use_local_model:
             # Use local vLLM server for inference
@@ -498,18 +509,29 @@ class AyumuClient(BaseClient):
                 json={
                     "model": model,
                     "temperature": temperature,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "stop": ["</search>", "</answer>"]
                 }
             )
 
-            choice = response.json()['choices'][0]
+            try:
+                data = response.json()
+            except Exception as e:
+                print("[vLLM ERROR] status:", response.status_code)
+                print("[vLLM ERROR] raw text:", response.text[:1000])
+                raise
 
+            if "choices" not in data:
+                print("[vLLM ERROR] no 'choices' in response, got:")
+                print(data)
+                raise RuntimeError(f"No 'choices' in response: {data}")
+
+            choice = data["choices"][0]
             content = choice["message"]["content"].strip()
 
-            if choice["stop_reason"] == "</search>":
+            if choice.get("stop_reason") == "</search>":
                 content += "</search>"
-            elif choice["stop_reason"] == "</answer>":
+            elif choice.get("stop_reason") == "</answer>":
                 content += "</answer>"
 
             return content

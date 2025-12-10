@@ -34,11 +34,11 @@ from memory.memory_system.models import (
 from tqdm import tqdm
 
 class SlotProcess:
-    def __init__(self):
+    def __init__(self, llm_name: str = "gpt-4o-mini", llm_backend: Literal["openai", "azure"] = "openai"):
         self.slot_container: Dict[str, WorkingSlot] = {}
         self.filtered_slot_container: List[WorkingSlot] = []
         self.routed_slot_container: List[Dict] = []
-        self.llm_model = OpenAIClient()
+        self.llm_model = OpenAIClient(model=llm_name, backend=llm_backend)
         self.memory_dict = []
 
     def add_slot(self, slot: WorkingSlot) -> None:

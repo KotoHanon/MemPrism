@@ -27,7 +27,7 @@ class FAISSMemorySystem(MemorySystem):
 
         self.memory_type = cfg.memory_type
         self.vector_store = FaissVectorStore(cfg.model_path, self.memory_type)
-        self.llm = OpenAIClient(model=cfg.llm_name)
+        self.llm = OpenAIClient(model=cfg.llm_name, backend=cfg.llm_backend)
 
         if self.memory_type == "semantic":
             self.global_cidmap2semrec: Dict[int, SemanticRecord] = {} # {cluster_id: SemanticRecord}, Only updated when abstracted semantic records are processed
