@@ -45,7 +45,6 @@ class BaseClient(abc.ABC):
     def has_memory(self):
         return False
 
-
 class VLLMOpenAIClient(BaseClient):
     def __init__(self):
         self.url = "http://localhost:8014"
@@ -120,6 +119,7 @@ class VLLMOpenAIClient(BaseClient):
             logger.error(f"Error: {str(e)}", exc_info=True)
             return f"Error: {str(e)}" 
 
+
 class LiteLLMClient(BaseClient):
     def __init__(self):
         litellm.drop_params = True
@@ -159,6 +159,97 @@ class LiteLLMClient(BaseClient):
                     **config
                 )
             return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            return f"Error: {str(e)}"
+    
+    def make_completion(self, prompt, cur_obs, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
+        config = {
+            "temperature": temperature,
+            "top_p": 1,
+            "provider": {
+                "sort": "throughput"
+            },
+        }
+
+        if model.startswith("openai/"):
+            # drop provider
+            config.pop("provider")
+
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
+
+        try: 
+            # Format messages properly with content type
+            messages = [
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                {"role": "assistant", "content": [{"type": "text", "text": cur_obs}]}
+            ]
+            if force_json:
+                response = litellm.completion(
+                    model=model,
+                    response_format={"type": "json_object"},
+                    messages=messages,
+                    **config
+                )
+            else:
+                response = litellm.completion(
+                    model=model,
+                    messages=messages,
+                    **config
+                )
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+class VLLMClient(BaseClient):
+    def __init__(self, model:str = ".cache/Qwen3-4B"):
+        litellm.drop_params = True
+        assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
+        #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
+        self.url = "http://localhost:8014"
+        self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+
+    def generate_response(self, prompt, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
+        config = {
+            "temperature": temperature,
+            "top_p": 0.95,
+            "provider": {
+                "sort": "throughput"
+            },
+        }
+
+        if model.startswith("openai/"):
+            # drop provider
+            config.pop("provider")
+
+        '''if not model.startswith("openrouter/") and not model.startswith("openai/"):
+            model = "openrouter/" + model'''
+
+        try: 
+            # Use local vLLM server for inference
+            messages = [{"role": "user", "content": prompt}]
+            response = requests.post(
+                self.url + "/v1/chat/completions",
+                json={
+                    "model": model,
+                    "temperature": temperature,
+                    "messages": messages,
+                    "stop": ["</search>", "</answer>"]
+                }
+            )
+
+            choice = response.json()['choices'][0]
+
+            content = choice["message"]["content"].strip()
+
+            if choice["stop_reason"] == "</search>":
+                content += "</search>"
+            elif choice["stop_reason"] == "</answer>":
+                content += "</answer>"
+
+            return content
 
         except Exception as e:
             return f"Error: {str(e)}"
@@ -455,7 +546,7 @@ class AyumuClient(BaseClient):
 
     def chat_with_memories(self, query_text: str, slots: List[WorkingSlot], message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user", threshold: float = 0.4) -> str:
         # Retrieve relevant memories
-        slot_query_limit = min(5, self.slot_process.get_container_size())
+        slot_query_limit = min(8, self.slot_process.get_container_size())
         sem_query_limit = min(3, self.semantic_memory_system.size // 3)
         epi_query_limit = min(3, self.episodic_memory_system.size // 3)
         if len(query_text) > 0:
@@ -550,14 +641,14 @@ class AyumuClient(BaseClient):
 
         try:
             working_slots = await self.slot_process.transfer_qa_agent_context_to_working_slots(context=context, max_slots=max_slots)
-            print("after await, len of working_slots =", len(working_slots) if working_slots is not None else 0)
+            print("after await, len of working_slots =", len(working_slots))
         except Exception as e:
             import traceback
             print("[ERROR] transfer_qa_agent_context_to_working_slots failed:", repr(e))
             traceback.print_exc()
             return
 
-        if not working_slots:
+        if len(working_slots) == 0:
             print("[Info] No working slots returned.")
             return
         

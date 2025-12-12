@@ -6,7 +6,7 @@ random.seed(42)
 np.random.seed(42)
 
 pd.options.display.max_columns = 100
-from models import LiteLLMClient, AMemClient, VLLMOpenAIClient, AyumuClient, Mem0Client
+from models import LiteLLMClient, AMemClient, VLLMOpenAIClient, AyumuClient, Mem0Client, VLLMClient
 import argparse
 import json
 import numpy as np
@@ -99,6 +99,8 @@ if __name__ == "__main__":
                         help="Use mem1 inference style")
     parser.add_argument("--use_litellm", action="store_true", default=False,
                         help="Use LiteLLM client")
+    parser.add_argument("--use_vllm", action="store_true", default=False,
+                        help="Use VLLM OpenAI client")
     parser.add_argument("--use_local_model", action="store_true", default=False,
                         help="Use VLLM OpenAI client")
     parser.add_argument("--use_graph", action="store_true", default=False,
@@ -383,6 +385,8 @@ if __name__ == "__main__":
             llm_client = VLLMOpenAIClient()
         elif args.use_mem0:
             llm_client = Mem0Client(args.use_local_model, use_graph=args.use_graph)
+        elif args.use_vllm:
+            llm_client = VLLMClient()
         else:
             llm_client = LiteLLMClient()
         # otherwise we can use parallel workers

@@ -107,13 +107,13 @@ class Pipeline(ABC):
 
 
 class Mem1Pipeline(Pipeline):
-    def __init__(self, llm_client, inference_type: Literal["normal", "amem" "mem1"]):
+    def __init__(self, llm_client, inference_type: Literal["normal", "amem", "mem1"]):
         super().__init__(llm_client)
         self.inference_type = inference_type
         
     def run_llm_loop(self, prompt, model="openai/gpt-4o-mini"):
         use_mem1 = self.inference_type == "mem1"
-        is_compress_memory = self.inference_type in ["amem", "mem1"]
+        is_compress_memory = self.inference_type in ["amem", "mem1", "normal"]
 
         cur_response = ""
         if use_mem1:
