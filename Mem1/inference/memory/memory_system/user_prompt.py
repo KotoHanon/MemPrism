@@ -145,7 +145,7 @@ Input WorkingSlot (JSON):
 """)
 
 TRANSFER_QA_AGENT_CONTEXT_TO_WORKING_SLOT_PROMPT = dedent("""
-Convert the QA Agent workflow context into at most {max_slots} WorkingSlot entries ready for filtering/routing.
+Convert the QA Agent workflow context into at most {max_slots} WorkingSlot and at least 1 WorkingSlot entries ready for filtering/routing.
 
 Goal:
 - Only create slots that are worth storing for long-term reuse.
@@ -181,7 +181,6 @@ Authoring rules:
    Use "semantic-evidence" for factual slots and "episodic-experience" for process/strategy slots.
 
 Output STRICTLY as JSON within the tags below (no extra commentary):
-<working-slots>
 {{
     "slots": [
         {{
@@ -198,7 +197,6 @@ Output STRICTLY as JSON within the tags below (no extra commentary):
         }}
     ]
 }}
-</working-slots>
 """)
 
 TRANSFER_FC_AGENT_CONTEXT_TO_WORKING_SLOT_PROMPT = dedent("""
@@ -260,7 +258,6 @@ Routing hints (implicit, do not add extra fields beyond schema):
 - procedural: store step-by-step playbooks (pre-checks, arg filling, calling, interpreting, retrying).
 
 Output STRICTLY as JSON within the tags below (no extra commentary):
-<working-slots>
 {{
   "slots": [
     {{
@@ -275,7 +272,6 @@ Output STRICTLY as JSON within the tags below (no extra commentary):
     }}
   ]
 }}
-</working-slots>
 """)
 
 
@@ -301,7 +297,6 @@ Authoring rules:
 7. If the context lacks meaningful content, return `"slots": []` but keep the envelope.
 
 Output STRICTLY as JSON within the tags below:
-<working-slots>
 {{
     "slots": [
     {{
@@ -318,7 +313,6 @@ Output STRICTLY as JSON within the tags below:
     }}
     ]
 }}
-</working-slots>
 """)
 
 TRANSFER_SLOT_TO_SEMANTIC_RECORD_PROMPT = dedent("""

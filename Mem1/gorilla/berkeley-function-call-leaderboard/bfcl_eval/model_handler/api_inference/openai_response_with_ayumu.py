@@ -78,7 +78,7 @@ class OpenAIResponsesHandlerWithMemory(BaseHandler):
             self.slot_process = SlotProcess(llm_name=self.model_name, llm_backend="openai")
             self._cur_test_id = test_id
             print(f"[Info] Size of slots before reset: {len(self.slots)}")
-            if len(self.slots) >= 50:
+            if len(self.slots) >= 10:
                 # Transfer existing slots to long-term memory
                 asyncio.run(self.transfer_slots_to_memories(self.slots, is_abstract=False))
                 self.slots = [] # Reset

@@ -22,6 +22,7 @@ from memory.memory_system.utils import (
     now_iso,
 )
 from memory.memory_system.models import EpisodicRecord, SemanticRecord
+from memory.memory_system.schema import Schema
 from mem0 import Memory
 from datetime import datetime
 import os
@@ -439,6 +440,16 @@ class Mem0Client(BaseClient):
         if self.use_local_model:
             self.url = "http://localhost:8014"
             self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+            vllm_config = {
+                "provider": "vllm",
+                "config": {
+                    "vllm_base_url": self.url,
+                    "model": ".cache/Qwen3-4B",
+                    "temperature": 0.01,
+                    "max_tokens": 2000,
+                }
+            }
+            self.config.update({"llm": vllm_config})
         else:
             assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
             #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"        
@@ -544,13 +555,13 @@ class AyumuClient(BaseClient):
             self.semantic_memory_system = FAISSMemorySystem(memory_type="semantic", llm_name=model, llm_backend="openai")
             self.episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_name=model, llm_backend="openai")
 
-    def chat_with_memories(self, query_text: str, slots: List[WorkingSlot], message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user", threshold: float = 0.4) -> str:
+    def chat_with_memories(self, query_text: str, slots: List[WorkingSlot], message: str, model: str, temperature: float = 0.01, force_json: bool = False, user_id: str = "default_user", threshold: float = 0.2) -> str:
         # Retrieve relevant memories
-        slot_query_limit = min(5, self.slot_process.get_container_size())
+        slot_query_limit = 8
         sem_query_limit = min(3, self.semantic_memory_system.size // 3)
         epi_query_limit = min(3, self.episodic_memory_system.size // 3)
         if len(query_text) > 0:
-            relevant_slots = self.slot_process.query(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split(), use_svd=False, embed_func=self.semantic_memory_system.vector_store._embed)
+            relevant_slots = self.slot_process.query(query_text=message, slots=slots, limit=slot_query_limit, key_words=query_text.split(), use_svd=True, embed_func=self.semantic_memory_system.vector_store._embed)
             relevant_semantic_memories = self.semantic_memory_system.query(query_text=query_text, limit=sem_query_limit, threshold=threshold)
             relevant_episodic_memories = self.episodic_memory_system.query(query_text=query_text, limit=epi_query_limit)
             

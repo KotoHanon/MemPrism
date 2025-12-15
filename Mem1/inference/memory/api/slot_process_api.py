@@ -32,6 +32,7 @@ from memory.memory_system.models import (
     SemanticRecord,
     ProceduralRecord,
 )
+from memory.memory_system.schema import Schema
 from tqdm import tqdm
 
 class SlotProcess:
@@ -203,8 +204,17 @@ class SlotProcess:
             max_slots=max_slots,
             snapshot=context,
         )
-        response = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
-        data = _extract_json_between(response, "working-slots", "working-slots")
+
+        schema = Schema(max_slots=max_slots)
+        qa_task_slot_schema = schema.QA_TASK_SLOT_SCHEMA
+        
+        response = await self.llm_model.complete(
+            system_prompt=system_prompt, 
+            user_prompt=user_prompt, 
+            json_schema=qa_task_slot_schema, 
+            schema_name="QA_TASK_SLOT_SCHEMA",
+            strict=True)
+        data = json.loads(response)
         if not data:
             return []
         
@@ -250,8 +260,17 @@ class SlotProcess:
             max_slots=max_slots,
             snapshot=context,
         )
-        response = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
-        data = _extract_json_between(response, "working-slots", "working-slots")
+
+        schema = Schema(max_slots=max_slots)
+        fc_task_slot_schema = schema.FC_TASK_SLOT_SCHEMA
+
+        response = await self.llm_model.complete(
+            system_prompt=system_prompt, 
+            user_prompt=user_prompt, 
+            json_schema=fc_task_slot_schema, 
+            schema_name="FC_TASK_SLOT_SCHEMA",
+            strict=True)
+        data = json.loads(response)
         if not data:
             return []
         
@@ -307,8 +326,16 @@ class SlotProcess:
             snapshot=snapshot,
         )
 
-        response = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
-        data = _extract_json_between(response, "working-slots", "working-slots")
+        schema = Schema(max_slots=max_slots)
+        experiment_task_slot_schema = schema.EXPERIMENT_TASK_SLOT_SCHEMA
+
+        response = await self.llm_model.complete(
+            system_prompt=system_prompt, 
+            user_prompt=user_prompt, 
+            json_schema=experiment_task_slot_schema, 
+            schema_name="EXPERIMENT_TASK_SLOT_SCHEMA",
+            strict=True)
+        data = json.loads(response)
 
         slots_data = data.get("slots", [])
         if not isinstance(slots_data, list):

@@ -373,7 +373,7 @@ if __name__ == "__main__":
                     total=num_routed_slots
                     ))
                 # transfer memories to records
-                #asyncio.run(llm_client.multi_thread_transfer_dicts_to_memories(is_abstract=args.abstract_memories))
+                asyncio.run(llm_client.multi_thread_transfer_dicts_to_memories(is_abstract=args.abstract_memories))
             except Exception as e:
                 print(f"Error processing batch: {e}")
 
