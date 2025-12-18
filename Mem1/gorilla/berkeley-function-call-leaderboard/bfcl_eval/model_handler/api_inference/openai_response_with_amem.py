@@ -55,8 +55,8 @@ class OpenAIResponsesHandlerWithAMem(BaseHandler):
         self._cur_test_id = None
         self._event_buffer: List[str] = []
 
-        self.logger_context = setup_logger("context", log_path=os.path.join("log/amem/context/", log_filename) ,level=logging.INFO)
-        self.logger_memory = setup_logger("memory", log_path=os.path.join("log/amem/memory/", log_filename) ,level=logging.INFO)
+        self.logger_context = setup_logger("context", log_path=os.path.join("log/gpt-4o-mini/amem/context/", log_filename) ,level=logging.INFO)
+        self.logger_memory = setup_logger("memory", log_path=os.path.join("log/gpt-4o-mini/amem/memory/", log_filename) ,level=logging.INFO)
 
     def _build_client_kwargs(self):
         kwargs = {}
@@ -95,7 +95,7 @@ class OpenAIResponsesHandlerWithAMem(BaseHandler):
             out.append(m)
         return out
 
-    def _inject_memory(self, query_text: str, message: list[dict], threshold: float = 0.4):
+    def _inject_memory(self, query_text: str, message: list[dict]):
 
         # Retrieve relevant memories
         relevant_memories = self.memory_system.search_agentic(query_text, k=3)
@@ -231,7 +231,8 @@ class OpenAIResponsesHandlerWithAMem(BaseHandler):
 
         if len(model_response_data.get("tool_call_ids", [])) == 0:
             # No tool calls means that the end of turn
-            self._materialize_turn_slots(max_slots=8)
+            self._materialize_turn_slots()
+
         return inference_data
 
     def _add_execution_results_FC(self, inference_data: dict, execution_results: list[str], model_response_data: dict) -> dict:
@@ -473,7 +474,7 @@ class OpenAIResponsesHandlerWithAMem(BaseHandler):
             out.append({"role": role, "content": content})
         return out
 
-    def _materialize_turn_slots(self, max_slots: int = 8):
+    def _materialize_turn_slots(self):
         # transfer the latest turn snapshot to working slots
         snapshot_events = _drain_snapshot(event_buffer=self._event_buffer)
         self.logger_context.info(f"[Info] Materializing context: {snapshot_events}")

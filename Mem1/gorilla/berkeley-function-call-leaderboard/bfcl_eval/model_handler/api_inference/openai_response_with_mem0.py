@@ -33,11 +33,6 @@ from memory.memory_system.utils import (
 )
 from mem0 import Memory
 
-from inference.amem.memory_system import AgenticMemorySystem
-
-PROJECT_ROOT = Path(__file__).resolve().parents[6]
-sys.path.insert(0, str(PROJECT_ROOT))
-
 log_filename = datetime.now().strftime("eval_%Y%m%d_%H%M%S.log")
 faiss_root = "/tmp/faiss_memories"
 os.makedirs(faiss_root, exist_ok=True)
@@ -84,8 +79,8 @@ class OpenAIResponsesHandlerWithMem0(BaseHandler):
         self._cur_test_id = None
         self._event_buffer: List[str] = []
 
-        self.logger_context = setup_logger("context", log_path=os.path.join("log/mem0/context/", log_filename) ,level=logging.INFO)
-        self.logger_memory = setup_logger("memory", log_path=os.path.join("log/mem0/memory/", log_filename) ,level=logging.INFO)
+        self.logger_context = setup_logger("context", log_path=os.path.join("log/gpt-4o-mini/mem0/context/", log_filename) ,level=logging.INFO)
+        self.logger_memory = setup_logger("memory", log_path=os.path.join("log/gpt-4o-mini/mem0/memory/", log_filename) ,level=logging.INFO)
 
     def _build_client_kwargs(self):
         kwargs = {}
@@ -255,7 +250,7 @@ class OpenAIResponsesHandlerWithMem0(BaseHandler):
 
         if len(model_response_data.get("tool_call_ids", [])) == 0:
             # No tool calls means that the end of turn
-            self._materialize_turn_slots(max_slots=8)
+            self._materialize_turn_slots()
         return inference_data
 
     def _add_execution_results_FC(self, inference_data: dict, execution_results: list[str], model_response_data: dict) -> dict:
@@ -458,7 +453,7 @@ class OpenAIResponsesHandlerWithMem0(BaseHandler):
         return ""
 
 
-    def _materialize_turn_slots(self, max_slots: int = 8):
+    def _materialize_turn_slots(self):
         # transfer the latest turn snapshot to working slots
         snapshot_events = _drain_snapshot(event_buffer=self._event_buffer)
         self.logger_context.info(f"[Info] Materializing context: {snapshot_events}")

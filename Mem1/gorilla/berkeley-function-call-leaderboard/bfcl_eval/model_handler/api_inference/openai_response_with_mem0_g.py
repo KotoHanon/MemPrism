@@ -92,8 +92,8 @@ class OpenAIResponsesHandlerWithMem0G(BaseHandler):
         self._cur_test_id = None
         self._event_buffer: List[str] = []
 
-        self.logger_context = setup_logger("context", log_path=os.path.join("log/mem0/context/", log_filename) ,level=logging.INFO)
-        self.logger_memory = setup_logger("memory", log_path=os.path.join("log/mem0/memory/", log_filename) ,level=logging.INFO)
+        self.logger_context = setup_logger("context", log_path=os.path.join("log/gpt-4o-mini/mem0/context/", log_filename) ,level=logging.INFO)
+        self.logger_memory = setup_logger("memory", log_path=os.path.join("log/gpt-4o-mini/mem0/memory/", log_filename) ,level=logging.INFO)
 
     def _build_client_kwargs(self):
         kwargs = {}

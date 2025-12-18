@@ -36,7 +36,7 @@ from memory.memory_system.schema import Schema
 from tqdm import tqdm
 
 class SlotProcess:
-    def __init__(self, llm_name: str = "gpt-4o-mini", llm_backend: Literal["openai", "azure"] = "openai"):
+    def __init__(self, llm_name: str = "gpt-4o-mini", llm_backend: Literal["openai", "vllm"] = "openai"):
         self.slot_container: Dict[str, WorkingSlot] = {}
         self.filtered_slot_container: List[WorkingSlot] = []
         self.routed_slot_container: List[Dict] = []
