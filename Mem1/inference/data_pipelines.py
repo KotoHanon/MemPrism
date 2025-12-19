@@ -9,6 +9,7 @@ import asyncio
 import threading
 import itertools
 from memory.memory_system.working_slot import WorkingSlot
+from MemAlpha.agent import MemoryAgent
 TOP_K = 3
 SEARCH_URL = "http://127.0.0.1:8013/retrieve"
 MAX_ITERATION = 6
@@ -107,7 +108,7 @@ class Pipeline(ABC):
 
 
 class Mem1Pipeline(Pipeline):
-    def __init__(self, llm_client, inference_type: Literal["normal", "amem", "mem1"]):
+    def __init__(self, llm_client, inference_type: Literal["normal", "amem", "mem1", "mem-alpha"]):
         super().__init__(llm_client)
         self.inference_type = inference_type
         
@@ -141,7 +142,8 @@ class Mem1Pipeline(Pipeline):
                 memory = cur_obs[len(prompt):]
             else:
                 memory = cur_obs
-            if self.llm_client.has_memory and memory:
+            
+            if self.inference_type == "amem":
                 self.llm_client.memory_system.add_note(memory)
             
             if internal_state:
@@ -256,7 +258,72 @@ class Mem0Pipeline(Pipeline):
 
             iteration_cnt += 1
         
-        return None, results_dict    
+        return None, results_dict
+
+class MemAlphaPipeline(Pipeline):
+    def __init__(self, llm_client):
+        super().__init__(llm_client)
+        self.llm_client = llm_client
+    
+    def run_llm_loop(self, prompt):
+        is_compress_memory = True
+        cur_response = ""
+        cur_obs = prompt
+        iteration_cnt = 0
+
+        results_dict = {"q": prompt}
+
+        while iteration_cnt < MAX_ITERATION:
+            cur_response = self.llm_client.generate_response(cur_obs)
+            print(f"[Info] Size of memory: {self.llm_client.memory_size}")
+
+            internal_state = extract_internal_state(cur_response, tag="think")
+            print(f"[Debug] Iteration {iteration_cnt} Response: {cur_response}")
+
+            memory = cur_obs
+
+            action_dict = act(cur_response)
+            if action_dict["type"] == "search":
+                search_results = action_dict["content"]
+                cur_turn_result = cur_response + search_results
+
+            if internal_state:
+                results_dict[f"t{iteration_cnt}"] = internal_state
+            else:
+                results_dict[f"t{iteration_cnt}"] = ""
+            
+            if is_compress_memory:
+                cur_obs = prompt
+            
+            num_turns_left = MAX_ITERATION - iteration_cnt - 1
+            if num_turns_left > 1:
+                hint = f"[HINT]You have {num_turns_left} turns left.[/HINT]"
+            else:
+                hint = f"[HINT]You have {num_turns_left} turn left. You must answer the question now.[/HINT]"
+
+            if action_dict is None:
+                return None, results_dict
+            elif action_dict["type"] == "search":
+                search_results = action_dict["content"]
+                search_results = f"<information>\n{hint}\n{search_results}\n</information>"
+                # Store search query in results dictionary
+                results_dict[f"r{iteration_cnt}"] = cur_response
+                # Store information in results dictionary
+                if iteration_cnt == MAX_ITERATION - 1:
+                    results_dict[f"i{iteration_cnt}"] = ""
+                else:
+                    results_dict[f"i{iteration_cnt}"] = search_results
+                next_obs = cur_obs + cur_response + search_results
+                query_text = action_dict["query"]
+            elif action_dict["type"] == "answer":
+                # Store final answer in results dictionary
+                query_text = ""
+                results_dict[f"r{iteration_cnt}"] = cur_response
+                return action_dict["content"], results_dict
+            cur_obs = next_obs
+
+            iteration_cnt += 1            
+
 
 class AyumuPipeline(Pipeline):
     def __init__(self, llm_client, inference_type: Literal["normal", "amem", "mem1", "ayumu"], slots, abstract_memories: bool = False):

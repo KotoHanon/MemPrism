@@ -24,6 +24,7 @@ from memory.memory_system.utils import (
 from memory.memory_system.models import EpisodicRecord, SemanticRecord
 from memory.memory_system.schema import Schema
 from mem0 import Memory
+from MemAlpha.agent import MemoryAgent
 from datetime import datetime
 import os
 from tqdm import tqdm
@@ -210,7 +211,7 @@ class VLLMClient(BaseClient):
         assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
         #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
         self.url = "http://localhost:8014"
-        self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+        self.tokenizer = AutoTokenizer.from_pretrained(".cache/Qwen3-4B")
 
     def generate_response(self, prompt, model="openai/gpt-4o-mini", temperature=0.01, force_json=False):
         config = {
@@ -311,7 +312,7 @@ class AMemClient(BaseClient):
         self.use_local_model = use_local_model
         if self.use_local_model:
             self.url = "http://localhost:8014"
-            self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+            self.tokenizer = AutoTokenizer.from_pretrained(".cache/Qwen3-4B")
         else:
             assert "OPENAI_API_KEY" in os.environ, "OPENAI_API_KEY is not set"
             #assert "OPENROUTER_API_KEY" in os.environ, "OPENROUTER_API_KEY is not set"
@@ -439,7 +440,7 @@ class Mem0Client(BaseClient):
         self.use_local_model = use_local_model
         if self.use_local_model:
             self.url = "http://localhost:8014"
-            self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+            self.tokenizer = AutoTokenizer.from_pretrained(".cache/Qwen3-4B")
             vllm_config = {
                 "provider": "vllm",
                 "config": {
@@ -528,6 +529,37 @@ class Mem0Client(BaseClient):
     def reset(self):
         self.memories = []
 
+class MemAlphaClient(BaseClient):
+    def __init__(self, model_name: str):
+        # MemAlpha only supports its own memory system, local model only
+        self.agent_config = {
+            "model_name": model_name,
+            "include_conversation_history": True,
+            "enable_thinking": True,
+            "vllm": True,
+            "temperature": 0.01,
+        }
+        self.agent = MemoryAgent(agent_config=self.agent_config)
+        
+    def chat_with_memories(self, message: str) -> str:
+        # Retrieve relevant memories
+        response = self.agent.chat(user_msg=message, status="memorie")
+        return response
+
+    def generate_response(self, prompt):
+        return self.chat_with_memories(prompt)
+
+    @property
+    def memory_size(self):
+        return len(self.agent.memory.semantic) + len(self.agent.memory.episodic)
+
+    @property
+    def has_memory(self):
+        return True
+    
+    def reset(self):
+        pass
+
 
 class AyumuClient(BaseClient):
     def __init__(self, model: str = "gpt-4o-mini", use_local_model: bool = False):
@@ -544,7 +576,7 @@ class AyumuClient(BaseClient):
         self.use_local_model = use_local_model
         if self.use_local_model:
             self.url = "http://localhost:8014"
-            self.tokenizer = AutoTokenizer.from_pretrained("/hpc_stor03/sjtu_home/zijian.wang/MEM1/.cache/Qwen3-4B")
+            self.tokenizer = AutoTokenizer.from_pretrained(".cache/Qwen3-4B")
             self.slot_process = SlotProcess(llm_name=model, llm_backend="vllm")
             self.semantic_memory_system = FAISSMemorySystem(memory_type="semantic", llm_name=model, llm_backend="vllm")
             self.episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_name=model, llm_backend="vllm")

@@ -6,11 +6,11 @@ random.seed(42)
 np.random.seed(42)
 
 pd.options.display.max_columns = 100
-from models import LiteLLMClient, AMemClient, VLLMOpenAIClient, AyumuClient, Mem0Client, VLLMClient
+from models import LiteLLMClient, AMemClient, VLLMOpenAIClient, MemAlphaClient, AyumuClient, Mem0Client, VLLMClient
 import argparse
 import json
 import numpy as np
-from data_pipelines import Mem1Pipeline, Mem0Pipeline, AyumuPipeline, model_estimated_match
+from data_pipelines import Mem1Pipeline, Mem0Pipeline, AyumuPipeline, MemAlphaPipeline, model_estimated_match
 import sys
 try:
     sys.path.append("..")
@@ -99,6 +99,8 @@ if __name__ == "__main__":
                         help="Use mem1 inference style")
     parser.add_argument("--use_litellm", action="store_true", default=False,
                         help="Use LiteLLM client")
+    parser.add_argument("--use_memalpha", action="store_true", default=False,
+                        help="Use MemAlpha client")
     parser.add_argument("--use_vllm", action="store_true", default=False,
                         help="Use VLLM OpenAI client")
     parser.add_argument("--use_local_model", action="store_true", default=False,
@@ -127,6 +129,8 @@ if __name__ == "__main__":
         inference_type = "amem"
     elif args.use_mem0:
         inference_type = "mem0"
+    elif args.use_memalpha:
+        inference_type = "mem-alpha"
     else:
         inference_type = "normal"
 
@@ -181,9 +185,11 @@ if __name__ == "__main__":
             prompt = row["prompt"][0]["content"]
             if args.use_mem0:
                 pipeline = Mem0Pipeline(client)
+            elif args.use_memalpha:
+                pipeline = MemAlphaPipeline(client)
             else:
                 pipeline = Mem1Pipeline(client, inference_type=inference_type)
-            answer, results_dict = pipeline.run_llm_loop(prompt, model=model)
+            answer, results_dict = pipeline.run_llm_loop(prompt)
             logger.info(f"Generated answer: {answer}, Golden answer: {row['reward_model']['ground_truth']}")
 
             if "multi" in args.data_file:
@@ -339,6 +345,12 @@ if __name__ == "__main__":
         # we must run in a single thread
         # otherwise chromadb will clash
         llm_client = AMemClient(args.use_local_model)
+        row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
+        for row in tqdm(row_data):
+            process_row(row)
+
+    elif args.use_memalpha:
+        llm_client = MemAlphaClient("qwen3-4b-think-FC")
         row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
         for row in tqdm(row_data):
             process_row(row)

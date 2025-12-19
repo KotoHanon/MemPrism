@@ -234,7 +234,7 @@ class QwenAgentThinkHandler(OpenAICompletionsHandler):
         self.llm = get_chat_model({
         'model': model_name,  # name of the model served by vllm server
         'model_type': 'oai',
-        'model_server':'http://localhost:8014/v1', # can be replaced with server host
+        'model_server':'http://localhost:8015/v1', # can be replaced with server host
         'api_key': "none",
         'generate_cfg': {
             'fncall_prompt_type': 'nous',

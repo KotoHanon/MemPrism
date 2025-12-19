@@ -112,7 +112,7 @@ class OpenAIResponsesHandlerWithMemory(BaseHandler):
     def slot_query(self, query_text: str, message: List[dict]):
         slot_query_limit = 3
         if len(query_text) > 0:
-            relevant_slots = self.slot_process.query(query_text=query_text, slots=self.slots, limit=slot_query_limit, use_svd=True, embed_func=self.semantic_memory_system.vector_store._embed)
+            relevant_slots = self.slot_process.query(query_text=query_text, slots=self.slots, limit=slot_query_limit, use_svd=False, embed_func=self.semantic_memory_system.vector_store._embed)
         else:
             relevant_slots = []
         return relevant_slots
@@ -142,13 +142,13 @@ class OpenAIResponsesHandlerWithMemory(BaseHandler):
             print(f"[Info] 1st Retrieved Slot: {_safe_dump_str(relevant_slots[0])}")
 
         slots_str = "\n".join(f"- {_safe_dump_str(entry[1].summary)}" for entry in relevant_slots)
-        #semantic_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].to_dict())}" for entry in relevant_semantic_memories)
-        #episodic_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].detail)}" for entry in relevant_episodic_memories)
-        #procedural_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].to_dict())}" for entry in relevant_procedural_memories)
+        semantic_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].to_dict())}" for entry in relevant_semantic_memories)
+        episodic_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].detail)}" for entry in relevant_episodic_memories)
+        procedural_memories_str = "\n".join(f"- {_safe_dump_str(entry[1].to_dict())}" for entry in relevant_procedural_memories)
 
-        #self.logger_memory.info(f"Retrieved Slots:\n{slots_str} \nRetrieved Semantic Memories:\n{semantic_memories_str}\nRetrieved Episodic Memories:\n{episodic_memories_str}\nRetrieved Procedural Memories:\n{procedural_memories_str}")
+        self.logger_memory.info(f"Retrieved Slots:\n{slots_str} \nRetrieved Semantic Memories:\n{semantic_memories_str}\nRetrieved Episodic Memories:\n{episodic_memories_str}\nRetrieved Procedural Memories:\n{procedural_memories_str}")
 
-        '''mem_msg = {
+        mem_msg = {
             "role": "user",
             "content": (
                 f"{self.MEM_TAG}\n"
@@ -163,8 +163,8 @@ class OpenAIResponsesHandlerWithMemory(BaseHandler):
                 "Here are some relevant procedural memories:\n"
                 f"{procedural_memories_str}\n"
             ),
-        }'''
-        mem_msg = {
+        }
+        '''mem_msg = {
             "role": "user",
             "content": (
                 f"{self.MEM_TAG}\n"
@@ -173,7 +173,7 @@ class OpenAIResponsesHandlerWithMemory(BaseHandler):
                 "Here are some relevant working slots:\n"
                 f"{slots_str}\n"
             ),
-        }
+        }'''
 
         #inject BEFORE last user message (FC-safe; user remains most recent)
         last_user_idx = None
