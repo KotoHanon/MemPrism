@@ -530,15 +530,24 @@ class Mem0Client(BaseClient):
         self.memories = []
 
 class MemAlphaClient(BaseClient):
-    def __init__(self, model_name: str):
-        # MemAlpha only supports its own memory system, local model only
-        self.agent_config = {
-            "model_name": model_name,
-            "include_conversation_history": True,
-            "enable_thinking": True,
-            "vllm": True,
-            "temperature": 0.01,
-        }
+    def __init__(self, model_name: str, use_local_model: bool = False):
+        
+        if use_local_model:
+            self.agent_config = {
+                "model_name": model_name,
+                "include_conversation_history": True,
+                "enable_thinking": True,
+                "vllm": True,
+                "temperature": 0.01,
+            }
+        else:
+            self.agent_config = {
+                "model_name": model_name,
+                "include_conversation_history": True,
+                "enable_thinking": False,
+                "vllm": False,
+                "temperature": 0.01,
+            }
         self.agent = MemoryAgent(agent_config=self.agent_config)
         
     def chat_with_memories(self, message: str) -> str:

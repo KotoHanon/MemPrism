@@ -352,7 +352,7 @@ if __name__ == "__main__":
             process_row(row)
 
     elif args.use_memalpha:
-        llm_client = MemAlphaClient("qwen3-4b-think-FC")
+        llm_client = MemAlphaClient(args.model, args.use_local_model)
         row_data = [(index, row, llm_client, args.model) for index, row in train_data.iterrows()]
         for row in tqdm(row_data):
             process_row(row)

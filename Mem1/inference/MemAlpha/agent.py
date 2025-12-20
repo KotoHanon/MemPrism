@@ -15,11 +15,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from qwen_agent.llm.fncall_prompts.qwen_fncall_prompt import QwenFnCallPrompt, FN_STOP_WORDS
 
 # Conditional import for vLLM
-try:
+'''try:
     from vllm import LLM, SamplingParams
     VLLM_AVAILABLE = True
 except ImportError:
-    VLLM_AVAILABLE = False
+    VLLM_AVAILABLE = False'''
+
+VLLM_AVAILABLE = True
 
 from .memory import Memory
 from .functions import FUNCTION_IMPLS, MEMORY_TOOL_SCHEMAS, SEARCH_TOOL_SCHEMAS, get_memory_tool_schemas, get_search_tool_schemas
