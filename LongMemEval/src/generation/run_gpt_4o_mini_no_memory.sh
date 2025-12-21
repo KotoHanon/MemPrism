@@ -1,0 +1,1 @@
+bash run_generation.sh /hpc_stor03/sjtu_home/zijian.wang/MemPrism/LongMemEval/data/longmemeval_oracle.json gpt-4o-mini full-history-session 50 json false direct none .json
