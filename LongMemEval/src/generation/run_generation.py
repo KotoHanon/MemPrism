@@ -324,7 +324,7 @@ def main(args):
         'mistral-7b-instruct-v0.2': 32000,
         'mistral-7b-instruct-v0.3': 32000,
         'In2Training/FILM-7B': 32000,
-        'qwen3-4b-think-FC': 32000,
+        'qwen3-4b': 32000,
     }
     model_max_length = model2maxlength[args.model_name]
     if 'gpt-4' in args.model_name.lower()  or 'gpt-3.5' in args.model_name.lower():

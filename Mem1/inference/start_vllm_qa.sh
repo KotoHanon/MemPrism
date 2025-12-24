@@ -12,9 +12,9 @@ TENSOR_PARALLEL_SIZE=1  # Using all 4 GPUs for tensor parallelism
 MAX_MODEL_LEN=32768
 GPU_MEMORY_UTILIZATION=0.6
 # Start vLLM server
-CUDA_VISIBLE_DEVICES=3 python -m vllm.entrypoints.openai.api_server \
+CUDA_VISIBLE_DEVICES=2 python -m vllm.entrypoints.openai.api_server \
   --model $MODEL_PATH \
-  --served-model-name qwen3-4b-think-FC \
+  --served-model-name qwen3-4b \
   --host $HOST \
   --port $PORT \
   --tensor-parallel-size $TENSOR_PARALLEL_SIZE \

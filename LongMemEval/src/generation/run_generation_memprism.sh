@@ -76,7 +76,7 @@ fi
 out_dir=${home_dir}/generation_logs/${retriever_alias}/${model_alias}/${reading_method}/
 mkdir -p $out_dir
 
-python run_generation.py \
+python run_generation_memprism.py \
        --in_file ${in_file} \
        --out_dir ${out_dir} \
        --out_file_suffix ${suffix} \

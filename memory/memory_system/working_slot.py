@@ -7,9 +7,10 @@ from openai import OpenAI
 from textwrap import dedent
 from memory.memory_system.user_prompt import(
     WORKING_SLOT_QA_FILTER_USER_PROMPT,
-    WORKING_SLOT_ROUTE_USER_PROMPT,
     WORKING_SLOT_EXPERIEMENT_FILTER_USER_PROMPT,
     WORKING_SLOT_FC_FILTER_USER_PROMPT,
+    WORKING_SLOT_CHAT_FILTER_USER_PROMPT,
+    WORKING_SLOT_ROUTE_USER_PROMPT,
 )  
 from memory.memory_system.llm import OpenAIClient, LLMClient
 
@@ -38,7 +39,7 @@ class WorkingSlot(SlotPayload):
             "tags": self.tags,
         }
     
-    async def slot_filter(self, llm: LLMClient, task: str = "qa") -> bool:
+    async def slot_filter(self, llm: LLMClient, task: Literal["qa", "experiment", "fc", "chat"] = "qa") -> bool:
         system_prompt = "You are a memory access reviewer. Only output 'yes' or 'no'."
         if task == "qa":
             user_prompt = WORKING_SLOT_QA_FILTER_USER_PROMPT.format(slot_dump=dump_slot_json(self))
@@ -46,7 +47,13 @@ class WorkingSlot(SlotPayload):
             user_prompt = WORKING_SLOT_EXPERIEMENT_FILTER_USER_PROMPT.format(slot_dump=dump_slot_json(self))
         elif task == "fc":
             user_prompt = WORKING_SLOT_FC_FILTER_USER_PROMPT.format(slot_dump=dump_slot_json(self))
+        elif task == "chat":
+            user_prompt = WORKING_SLOT_CHAT_FILTER_USER_PROMPT.format(slot_dump=dump_slot_json(self))
         out = await llm.complete(system_prompt, user_prompt)
+        out = out.strip().lower()
+
+        out = out.replace('<think>', '').replace('</think>', '')
+        out = out.replace('<thinking>', '').replace('</thinking>', '')
 
         if out.strip().lower() not in ["yes", "no"]:
             raise ValueError(f"Invalid slot filter output: {out}")
@@ -57,6 +64,11 @@ class WorkingSlot(SlotPayload):
         system_prompt = "You are a memory type classifier. Only output legal string: 'semantic', 'procedural', or 'episodic'."
         user_prompt = WORKING_SLOT_ROUTE_USER_PROMPT.format(slot_dump=dump_slot_json(self))
         out = await llm.complete(system_prompt, user_prompt)
+        out = out.strip().lower()
+
+        out = out.replace('<think>', '').replace('</think>', '')
+        out = out.replace('<thinking>', '').replace('</thinking>', '')
+
         if out.strip() not in ["semantic", "procedural", "episodic"]:
             raise ValueError(f"Invalid slot type: {out}")
         return out

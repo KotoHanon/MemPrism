@@ -53,6 +53,7 @@ class SlotProcess:
         self.llm_model = OpenAIClient(model=llm_name, backend=llm_backend)
         self.memory_dict = []
         self.task = task
+        self.total_working_slots = []
 
     def add_slot(self, slot: WorkingSlot) -> None:
         self.slot_container[slot.to_dict().get('id')] = slot
@@ -135,7 +136,8 @@ class SlotProcess:
         return self.routed_slot_container
 
     def multi_thread_filter_and_route_slot(self, slot: WorkingSlot):
-        check_result = asyncio.run(slot.slot_filter(self.llm_model, task=self.task))
+        #check_result = asyncio.run(slot.slot_filter(self.llm_model, task=self.task))
+        check_result = True
         if check_result == True:
             try:
                 route_result = asyncio.run(slot.slot_router(self.llm_model))
@@ -316,12 +318,12 @@ class SlotProcess:
             
         return working_slots
 
-    async def transfer_chat_agent_context_to_working_slots(self, context: str, max_slots: int = 50) -> List[WorkingSlot]:
+    def transfer_chat_agent_context_to_working_slots(self, context: str, max_slots: int = 50) -> List[WorkingSlot]:
         system_prompt = (
-            "You are an expert tool-using agent archivist. "
-            "Transform BFCL-style multi-turn tool-calling trajectories into reusable memory slots. "
-            "You must distinguish Semantic evidence, Episodic experience, and Procedural experience. "
-            "Output strictly as JSON."
+            "You are a personal memory archivist. "
+            "Extract stable user facts (preferences, attributes, relationships, possessions) from the WorkingSlot "
+            "into a semantic memory entry suitable for answering questions about the user's history. "
+            "Focus on timeless facts, not event narratives. Output only the requested JSON."
         )
 
         user_prompt = TRANSFER_CHAT_AGENT_CONTEXT_TO_WORKING_SLOT_PROMPT.format(
@@ -332,15 +334,19 @@ class SlotProcess:
         schema = Schema(max_slots=max_slots)
         chat_task_slot_schema = schema.CHAT_TASK_SLOT_SCHEMA
 
-        response = await self.llm_model.complete(
+        response = asyncio.run(self.llm_model.complete(
             system_prompt=system_prompt, 
             user_prompt=user_prompt, 
             json_schema=chat_task_slot_schema, 
             schema_name="CHAT_TASK_SLOT_SCHEMA",
             strict=False,
-            max_tokens=4096)
-        data = json.loads(response)
-        if not data:
+            max_tokens=4096))
+        try:
+            data = json.loads(response)
+            if not data:
+                return []
+        except Exception as e:
+            print(f"JSON parsing error: {e}")
             return []
         
         slots_data = data.get("slots", [])
@@ -361,15 +367,21 @@ class SlotProcess:
             attachments = slot_dict.get("attachments") or {}
             tags = slot_dict.get("tags") or []
 
-            slot = WorkingSlot(
-                stage=stage,
-                topic=topic,
-                summary=summary,
-                attachments=attachments,
-                tags=list(tags),
-            )
+            try:
+                slot = WorkingSlot(
+                    stage=stage,
+                    topic=topic,
+                    summary=summary,
+                    attachments=attachments,
+                    tags=list(tags),
+                )
+                working_slots.append(slot)
+            except Exception as e:
+                print(f"Error creating WorkingSlot: {e}")
+                continue
 
-            working_slots.append(slot)
+        if len(working_slots) != 0:
+            self.total_working_slots.extend(working_slots)
             
         return working_slots        
 
@@ -476,7 +488,7 @@ class SlotProcess:
 
         try:
             if memory_type == "semantic":
-                input_dict = asyncio.run(self.transfer_slot_to_semantic_record(slot)
+                input_dict = asyncio.run(self.transfer_slot_to_semantic_record(slot))
             elif memory_type == "episodic":
                 input_dict = asyncio.run(self.transfer_slot_to_episodic_record(slot))
             elif memory_type == "procedural":
@@ -576,8 +588,7 @@ class SlotProcess:
             system_prompt = (
                 "You are a personal timeline curator. "
                 "Convert the WorkingSlot into an episodic memory capturing a chronological user experience "
-                "with temporal context (What → When → Who/Where → Outcome). Preserve session provenance and temporal cues "
-                "to support timeline reasoning. Output only the requested JSON."
+                "Output only the requested JSON."
             )
             user_prompt = TRANSFER_SLOT_TO_EPISODIC_RECORD_PROMPT_CHAT.format(dump_slot_json=dump_slot_json(slot), stage=slot.stage)
 

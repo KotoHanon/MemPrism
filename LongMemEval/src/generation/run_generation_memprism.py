@@ -11,6 +11,7 @@ import argparse
 from transformers import AutoTokenizer
 import tiktoken
 import asyncio
+from typing import List, Dict, Any, Optional
 
 from memory.memory_system.utils import (
     _safe_dump_str,
@@ -18,6 +19,7 @@ from memory.memory_system.utils import (
 )
 from memory.api.faiss_memory_system_api import FAISSMemorySystem
 from memory.api.slot_process_api import SlotProcess
+from memory.memory_system.models import EpisodicRecord
 from textwrap import dedent
 
 
@@ -52,7 +54,7 @@ def check_args(args):
     print(args)
 
 
-def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, history_format: str, cot: bool, tokenizer, tokenizer_backend, max_retrieval_length, merge_key_expansion_into_value, slot_process, semantic_memory_system, episodic_memory_system, con=False, con_client=None, con_model=None, max_workers=20):    
+def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, history_format: str, cot: bool, tokenizer, tokenizer_backend, max_retrieval_length, merge_key_expansion_into_value, slot_process, semantic_memory_system, episodic_memory_system, con=False, con_client=None, con_model=None, max_workers=50):    
     if retriever_type == 'no-retrieval':
         answer_prompt_template = '{}'
         if cot:
@@ -125,7 +127,11 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
                 retrieved_chunks += [(session_date, x) for x in session_entry]
 
     elif retriever_type == "memprism-session":
+        idmap2entry = {}
+        context_list = []
         for session_date, session_entry, session_id in zip(entry['haystack_dates'], entry['haystack_sessions'], entry['haystack_session_ids']):
+            idmap2entry[session_id] = (session_date, session_entry)
+
             if useronly:
                 retrieved_chunks.append((session_date, [x for x in session_entry if x['role'] == 'user']))
                 session_str = _safe_dump_str([x for x in session_entry if x['role'] == 'user'])
@@ -137,11 +143,33 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
             Session ID: {session_id}
             Session Content: {session_str}
             """)
-            # transfer chat context to working slots, filter and route slots, and transfer slots to memory 
-            working_slots = slot_process.transfer_chat_agent_context_to_working_slots(context=context)
-            _multi_thread_run(multi_thread_filter_and_route_slot, working_slots, max_workers=max_workers)
-            _multi_thread_run(multi_thread_transfer_slot_to_memory, slot_process.filter_and_route_slots, max_workers=max_workers)
-            asyncio.run(multi_thread_transfer_dicts_to_memories(slot_process, semantic_memory_system, episodic_memory_system))
+            context_list.append(context)
+    
+        # transfer chat context to working slots, filter and route slots, and transfer slots to memory
+        _multi_thread_run(slot_process.transfer_chat_agent_context_to_working_slots, context_list, max_workers=max_workers)
+        working_slots = slot_process.total_working_slots.copy()
+        print(f"[Info] Transferring session {session_id} to memories, number of working slots: {len(working_slots)}")
+        _multi_thread_run(slot_process.multi_thread_filter_and_route_slot, working_slots, max_workers=max_workers)
+
+        _multi_thread_run(slot_process.multi_thread_transfer_slot_to_memory, slot_process.routed_slot_container, max_workers=max_workers)
+        asyncio.run(multi_thread_transfer_dicts_to_memories(slot_process, semantic_memory_system, episodic_memory_system))
+        
+        print(f"[Info] Finished transferring, size of semantic memory: {semantic_memory_system.size}, size of episodic memory: {episodic_memory_system.size}")
+        
+        semantic_records, episodic_records, session_ids = get_related_information_by_query(query=question_string, semantic_memory_system=semantic_memory_system, episodic_memory_system=episodic_memory_system)
+
+        # clean up retrieved chunks
+        retrieved_chunks = []
+
+        for session_id in session_ids:
+            if session_id in idmap2entry.keys():
+                session_date, session_entry = idmap2entry[session_id]
+                if useronly:
+                    retrieved_chunks.append((session_date, [x for x in session_entry if x['role'] == 'user']))
+                else:
+                    retrieved_chunks.append((session_date, session_entry))
+        
+        print(f"[Info] Retrieved {len(retrieved_chunks)} sessions from MemPrism for question: {question_string}")
 
             
     # get retrieved chunks
@@ -251,6 +279,7 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
         retrieved_chunks = retrieved_chunks_with_notes
                 
     # sort sessions by their dates
+
     retrieved_chunks.sort(key=lambda x: x[0])
     
     history_string = ""
@@ -287,6 +316,16 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
         else:
             raise NotImplementedError
 
+        semantic_memories_str = ""
+        episodic_memories_str = ""
+
+        if len(semantic_records) > 0:
+            semantic_memories_str = "\n".join(f"- {record.summary}" for record in semantic_records)
+        if len(episodic_records) > 0:
+            episodic_memories_str = "\n".join(f"- {_safe_dump_str(record.detail)}" for record in episodic_records[:9])        
+
+        history_string += f'\n### Related Semantic Memory: {semantic_memories_str}\n### Related Episodic Memory: {episodic_memories_str}\n'
+
     assert retriever_type == "no-retrieval" or history_string != ""
     if retriever_type == "no-retrieval":
         prompt = answer_prompt_template.format(question_string)
@@ -309,14 +348,8 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
         prompt = answer_prompt_template.format(history_string, question_date_string, question_string)
 
     return prompt
-    
 
-@backoff.on_exception(backoff.constant, (openai.RateLimitError), 
-                      interval=5)
-def chat_completions_with_backoff(client, **kwargs):
-    return client.chat.completions.create(**kwargs)
-
-async def multi_thread_transfer_dicts_to_memories(self, slot_process: SlotProcess, semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, is_abstract: bool = False):
+async def multi_thread_transfer_dicts_to_memories(slot_process: SlotProcess, semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, is_abstract: bool = False):
     semantic_records = []
     episodic_records = []
 
@@ -355,16 +388,45 @@ async def abstract_episodic_records_to_semantic_record(epi_records: List[Episodi
         traceback.print_exc()
 
 def reset_memprism_system(args):
-    if "gpt" in args.model_name.lower():
+    '''if "gpt" in args.model_name.lower():
         llm_backend = "openai"
     else:
         llm_backend = "vllm"
 
     slot_process = SlotProcess(llm_name=args.model_alias, llm_backend=llm_backend, task="chat")
     semantic_memory_system = FAISSMemorySystem(memory_type="semantic", llm_model=args.model_alias, llm_backend=llm_backend)
-    episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_model=args.model_alias, llm_backend=llm_backend)
+    episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_model=args.model_alias, llm_backend=llm_backend)'''
+
+    slot_process = SlotProcess(task="chat")
+    semantic_memory_system = FAISSMemorySystem(llm_backend="openai")
+    episodic_memory_system = FAISSMemorySystem(llm_backend="openai")
 
     return slot_process, semantic_memory_system, episodic_memory_system
+
+def get_related_information_by_query(query: str, semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, limit: int = 10):
+    semantic_query_results = semantic_memory_system.query(query, limit=limit)
+    episodic_query_results = episodic_memory_system.query(query, limit=(2 * limit))
+
+    semantic_records = [record for score, record in semantic_query_results]
+    episodic_records = [record for score, record in episodic_query_results]
+    session_ids = []
+    
+    for epi in episodic_records:
+        session_id = epi.detail.get('session_id', None)
+        if session_id is not None:
+            session_ids.append(session_id)
+    
+    # duplicate removal
+    session_ids = list(set(session_ids))
+    print(len(session_ids), "related sessions retrieved from episodic memory.")
+    
+    return semantic_records, episodic_records, session_ids
+
+
+@backoff.on_exception(backoff.constant, (openai.RateLimitError), 
+                      interval=5)
+def chat_completions_with_backoff(client, **kwargs):
+    return client.chat.completions.create(**kwargs)
 
 
 def main(args):
@@ -405,7 +467,7 @@ def main(args):
         'mistral-7b-instruct-v0.2': 32000,
         'mistral-7b-instruct-v0.3': 32000,
         'In2Training/FILM-7B': 32000,
-        'qwen3-4b-think-FC': 32000,
+        'qwen3-4b': 32000,
     }
     model_max_length = model2maxlength[args.model_name]
     if 'gpt-4' in args.model_name.lower()  or 'gpt-3.5' in args.model_name.lower():
@@ -437,7 +499,6 @@ def main(args):
                                     tokenizer=tokenizer, tokenizer_backend=tokenizer_backend, max_retrieval_length=max_retrieval_length,
                                     merge_key_expansion_into_value=args.merge_key_expansion_into_value, slot_process=slot_process,
                                     semantic_memory_system=semantic_memory_system, episodic_memory_system=episodic_memory_system,)
-            print('Prepared prompt:', prompt)
 
         # reset MemPrism system after each example
         slot_process, semantic_memory_system, episodic_memory_system = reset_memprism_system(args)

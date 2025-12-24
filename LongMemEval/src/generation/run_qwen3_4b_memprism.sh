@@ -1,0 +1,1 @@
+bash run_generation_memprism.sh /hpc_stor03/sjtu_home/zijian.wang/MemPrism/LongMemEval/data/longmemeval_s_cleaned.json qwen3-4b memprism 50 json false direct none .json

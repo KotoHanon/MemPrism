@@ -119,6 +119,61 @@ STRICT OUTPUT: respond with a single lowercase word: `yes` or `no`. Do not expla
 </slot-dump>
 """)
 
+WORKING_SLOT_CHAT_FILTER_USER_PROMPT = dedent("""
+You guard Chat-Agent's long-term memory entrance. Decide if this WorkingSlot deserves promotion into FAISS storage.
+
+Your goal is to keep **reusable, personal-context memories** that can help answer future questions about the user's history (e.g., LongMemEval-style temporal and factual questions), not just low-level logs.
+
+Evaluate the slot along three dimensions:
+
+1. Reusable user knowledge or pattern – Does this slot contain stable user information that could be helpful for answering future questions?
+   - Includes:
+     - User events with clear temporal context (dates, "first time", "before/after" relations).
+     - User preferences, habits, or routines that persist over time.
+     - User relationships with people, places, organizations, products, or services.
+     - Temporal facts that enable timeline reasoning (sequences, durations, orderings).
+     - Concrete possessions, activities, or decisions.
+
+2. Abstraction level – Is the content more than ephemeral chatter?
+   - Prefer:
+     - Specific user facts grounded in session content.
+     - Events with temporal anchors (dates, temporal cues).
+     - Preferences with clear context or examples.
+   - Avoid:
+     - Generic assistant advice or explanations (e.g., "Here are some tips...").
+     - Pure boilerplate responses with no user-specific information.
+     - Vague statements without temporal or factual grounding.
+
+3. Reliability and provenance – Is the information well-supported and traceable?
+   - Prefer:
+     - Facts with session_id provenance (can trace back to original conversation).
+     - Information explicitly stated by the user.
+     - Events with specific dates or clear temporal cues.
+   - Avoid:
+     - Speculation or inferences not grounded in user statements.
+     - Information without session provenance.
+     - Contradictory or unclear temporal information.
+
+Decision rule:
+- Default is slightly conservative, but you SHOULD store any slot that carries at least one **meaningful, reusable** user fact or event.
+- Return `yes` if:
+  - The slot contains **some reusable user knowledge** (dimension 1), AND
+  - It has clear provenance (attachments.session_ids populated), AND
+  - It is at least moderately reliable (dimension 3) OR shows clear user-specific content (dimension 2).
+- Return `no` if the slot is:
+  - Mostly generic assistant responses,
+  - Extremely vague with no temporal or factual grounding,
+  - Missing session_id provenance,
+  - Or dominated by ephemeral chatter with no lasting user information.
+
+When you are uncertain BUT the slot contains at least one meaningful, traceable user fact or event, prefer answering `yes` rather than `no`.
+
+STRICT OUTPUT: respond with a single lowercase word: `yes` or `no`. Do not explain.
+
+<slot-dump>
+{slot_dump}
+</slot-dump>
+""")
 
 WORKING_SLOT_ROUTE_USER_PROMPT = dedent("""
 Map this WorkingSlot to the correct ResearchAgent long-term memory family. Choose EXACTLY one label:
@@ -367,17 +422,31 @@ Output STRICTLY as JSON within the tags below (no extra commentary):
 TRANSFER_CHAT_AGENT_CONTEXT_TO_WORKING_SLOT_PROMPT = dedent("""
 Convert the Chat Agent workflow context into at most {max_slots} WorkingSlot entries ready for filtering/routing.
 
-This prompt is designed for LongMemEval-style multi-session chat history, where users discuss life events, preferences, and activities across many sessions. The goal is to store **reusable, personal-context memories** that help answer future questions about the user's history.
+This prompt is designed for LongMemEval-style multi-session chat history, where users discuss life events, preferences, and activities across many sessions. The goal is to store **concrete user actions and experiences** that help answer future questions about what the user did, when, and in what sequence.
+
+**PRIORITY: Capture what the user DID (episodic events), not what the user IS (semantic attributes).**
 
 A slot SHOULD be created if and only if it contains:
-  (A) Semantic evidence: stable, factual user information (preferences, events, dates, relationships, purchases, activities) that can later support answering temporal or factual questions.
+  (A) **PRIMARY (Strongly Preferred)**: Episodic experience: chronological user actions, events, or activities with timestamps or relative timing that enables temporal reasoning (e.g., "user bought X on date Y", "user visited Z before event W", "user experienced problem P after doing Q").
   OR
-  (B) Episodic experience: chronological user events with timestamps or relative timing that enables temporal reasoning (e.g., "first", "before", "after", "how many days").
+  (B) **SECONDARY (Only if no episodic content)**: User preferences or relationships that emerge FROM user actions (e.g., "user repeatedly chooses X" implies preference, not "user likes X" stated in isolation).
 
-Ignore:
+**What to PRIORITIZE (capture these first):**
+- User actions: purchases, trips, appointments, activities, services, decisions, experiences
+- User events: things that happened TO the user (problems, milestones, encounters)
+- Temporal sequences: "first time doing X", "did Y after Z", "experienced A then B"
+- Concrete instances: "bought new car on March 15th" > "owns a car"
+
+**What to DEPRIORITIZE (only capture if no episodic content available):**
+- Static attributes: "user owns X", "user is Y" (unless tied to an acquisition event)
+- Abstract preferences: "user likes X" (unless derived from repeated actions)
+- Generic relationships: "user knows person Y" (unless tied to a specific interaction)
+
+**What to IGNORE completely:**
 - Generic assistant advice or explanations (e.g., "Here are some tips for...").
 - Ephemeral chatter without concrete user facts.
 - Pure assistant responses with no user-specific information.
+- Summary statements like "user is interested in X" without concrete supporting actions.
 
 Context Snapshot (may include multiple sessions with Session IDs and dates):
 <chat-context>
@@ -385,60 +454,79 @@ Context Snapshot (may include multiple sessions with Session IDs and dates):
 </chat-context>
 
 Authoring rules:
-1. Each slot MUST capture a single user fact, event, or preference.
-2. `stage` MUST be one of:
-   - user_event           # concrete events: purchases, trips, appointments, activities, services
-   - user_preference      # stated preferences, habits, routines, opinions
-   - user_relationship    # people, pets, organizations the user mentions
-   - user_timeline        # temporal facts: dates, durations, sequences of events
-   - meta                 # cross-session patterns or agent insights
-3. `summary` MUST be ≤80 words, self-contained, and follow:
-   - For events: What → When → Details (e.g., "User got car serviced on March 15th.")
-   - For preferences: Topic → Preference → Context
-   - For timeline: Event A → Event B → Temporal relation
-4. `topic` is a 3–6 word slug referencing the subject (lowercase, space-separated),
-   e.g. "car first service date", "gps system replacement", "gas station rewards program".
-5. `attachments` is **REQUIRED** and MUST include:
-   - "session_ids": {{"items": []}}   # **MANDATORY**: A Session ID from context (e.g., ["sharegpt_yywfIrx_0"])
-   - "dates": {{"items": []}}         # session dates or event dates mentioned (e.g., ["2023/04/10", "March 15th"])
-   - "entities": {{"items": []}}      # key entities: people, places, products, services mentioned
-   - "facts": {{"items": []}}         # extracted factual statements (paraphrased, concise)
-   - "temporal_cues": {{"items": []}} # temporal markers: "first", "before", "after", "on March 15th", "3/22"
-6. `tags` is a list of lowercase keywords (≤5 items) mixing:
-   - domain hints: "car","travel","finance","health","shopping","home","work","hobby"
-   - memory type: "semantic-evidence","episodic-experience","temporal-fact","user-preference"
-   Use "semantic-evidence" for factual slots and "episodic-experience" for event/timeline slots.
+1. Each slot MUST capture a single user action, event, or experience (NOT a static attribute).
+2. `stage` MUST be one of (in order of preference):
+   - **user_event** (HIGHEST PRIORITY)      # concrete actions/events: purchased, traveled, experienced, encountered, tried, visited, used
+   - **user_timeline** (HIGH PRIORITY)      # temporal sequences: "did X before Y", "first/second/last time doing Z", "X days after Y"
+   - user_preference                        # ONLY if derived from repeated actions (e.g., "user always chooses X", "user repeatedly visits Y")
+   - user_relationship                      # ONLY if tied to specific interaction (e.g., "user met person Y at event Z", NOT just "user knows Y")
+   - meta                                   # cross-session patterns (e.g., "user asks about topic X every Monday")
 
-CRITICAL: Every slot MUST have `attachments.session_ids` populated with the Session ID(s) from the context where the information originated. This is essential for memory provenance tracking.
+3. `summary` MUST be ≤80 words, ACTION-FOCUSED, and follow:
+   - **For events (PREFERRED)**: WHO (user) → DID WHAT (action/event) → WHEN (timestamp) → DETAILS (context/outcome)
+     Example: "User brought new car to dealership for first service on March 15th. Service completed successfully."
+   - **For timeline (PREFERRED)**: EVENT A (action) → TEMPORAL RELATION → EVENT B (action) → OUTCOME
+     Example: "User experienced GPS malfunction on 3/22, one week after first car service on March 15th. Returned to dealership, got system replaced."
+   - For preferences: ONLY if pattern emerges: "User has [ACTION PATTERN] → INFERRED PREFERENCE → SUPPORTING INSTANCES"
+     Example: "User consistently chooses Shell gas stations over competitors. Observed in 5 sessions (dates: ...)."
+
+4. `topic` is a 3–6 word slug referencing the **ACTION or EVENT** (lowercase, space-separated),
+   e.g. "car first service event", "gps system replacement experience", "dealership visit march 15th".
+   AVOID static topics like "car ownership" or "gas station preference" unless tied to specific actions.
+
+5. `attachments` is **REQUIRED** and MUST include:
+   - "session_ids": {{"items": []}}   # **MANDATORY**: Session ID(s) from context (e.g., ["sharegpt_yywfIrx_0"])
+   - "dates": {{"items": []}}         # **CRITICAL for episodic**: event dates, session dates (e.g., ["2023/04/10", "March 15th", "3/22"])
+   - "entities": {{"items": []}}      # actors, places, objects involved in the ACTION (e.g., ["user", "dealership", "GPS system", "new car"])
+   - "facts": {{"items": []}}         # **ACTION-FOCUSED**: what user DID, not what user IS (e.g., ["brought car for service on March 15th", "GPS replaced after malfunction"])
+   - "temporal_cues": {{"items": []}} # **CRITICAL for episodic**: "first time", "before", "after", "on March 15th", "one week later", "3/22"
+
+6. `tags` is a list of lowercase keywords (≤5 items) mixing:
+   - **ACTION verbs (REQUIRED for episodic)**: "purchased", "visited", "experienced", "tried", "used", "encountered"
+   - Domain hints: "car","travel","finance","health","shopping","home","work","hobby"
+   - **Memory type (IMPORTANT)**: 
+     - "episodic-experience" (use for >80% of slots - user actions/events)
+     - "temporal-fact" (use when slot connects multiple events in time)
+     - "semantic-evidence" (RARE - only for preference patterns derived from multiple actions)
+     - "user-preference" (RARE - only if clear pattern from repeated actions)
+
+**CRITICAL QUALITY BAR:**
+- If context contains BOTH actions and static facts, prioritize the ACTIONS.
+- Example: Context says "User owns a new car. Got it serviced on March 15th."
+  - ✅ CREATE SLOT: "User brought new car for first service on March 15th."
+  - ❌ DON'T CREATE SLOT: "User owns a new car."
+- If only static facts exist with no actions, create slots ONLY if they can be tied to acquisition/usage events.
+- Every slot MUST have `attachments.session_ids` populated for provenance tracking.
+- Every episodic slot MUST have non-empty `attachments.dates` and `attachments.temporal_cues`.
 
 Output STRICTLY as JSON within the tags below (no extra commentary):
 {{
     "slots": [
         {{
             "stage": "user_event",
-            "topic": "car first service experience",
-            "summary": "User had their new car serviced for the first time on March 15th. It was described as a great experience.",
+            "topic": "car first service event",
+            "summary": "User brought new car to dealership for first service on March 15th. Service was completed, described as great experience.",
             "attachments": {{
                 "session_ids": {{"items": ["answer_4be1b6b4_2"]}},
                 "dates": {{"items": ["March 15th", "2023/04/10"]}},
-                "entities": {{"items": ["new car", "car service"]}},
-                "facts": {{"items": ["first service on March 15th", "great experience"]}},
+                "entities": {{"items": ["user", "new car", "dealership", "car service"]}},
+                "facts": {{"items": ["brought car to dealership on March 15th", "first service completed", "great experience"]}},
                 "temporal_cues": {{"items": ["first time", "on March 15th"]}}
             }},
-            "tags": ["car","service","semantic-evidence","temporal-fact"]
+            "tags": ["car","service","episodic-experience","temporal-fact","visited"]
         }},
         {{
             "stage": "user_timeline",
-            "topic": "gps system issue and fix",
-            "summary": "User experienced GPS system malfunction on 3/22 after first car service. Dealership replaced entire GPS system, now working flawlessly.",
+            "topic": "gps malfunction and repair sequence",
+            "summary": "User experienced GPS system malfunction on 3/22, one week after first car service on March 15th. Returned to dealership, entire GPS system replaced, now working flawlessly.",
             "attachments": {{
-                "session_ids": {{"items": "[answer_4be1b6b4_3]"}},
-                "dates": {{"items": ["3/22", "2023/04/10"]}},
-                "entities": {{"items": ["GPS system", "dealership"]}},
-                "facts": {{"items": ["GPS issue on 3/22", "system replaced", "now working"]}},
-                "temporal_cues": {{"items": ["on 3/22", "after first service"]}}
+                "session_ids": {{"items": ["answer_4be1b6b4_3"]}},
+                "dates": {{"items": ["3/22", "March 15th", "2023/04/10"]}},
+                "entities": {{"items": ["user", "GPS system", "dealership"]}},
+                "facts": {{"items": ["GPS malfunction on 3/22", "returned to dealership", "system replaced", "now working"]}},
+                "temporal_cues": {{"items": ["on 3/22", "one week after first service", "after March 15th"]}}
             }},
-            "tags": ["car","gps","episodic-experience","temporal-fact"]
+            "tags": ["car","gps","episodic-experience","temporal-fact","experienced","encountered"]
         }}
     ]
 }}
@@ -667,47 +755,54 @@ Output STRICTLY as JSON inside the tags:
 TRANSFER_SLOT_TO_EPISODIC_RECORD_PROMPT_CHAT = dedent("""
 Convert the WorkingSlot into an episodic memory record suitable for FAISS retrieval in LongMemEval-style personal chat history.
 
+**CRITICAL**: You MUST populate ALL fields in the output, even if some attachments are empty. Use the WorkingSlot's `summary`, `topic`, and available `attachments` to infer and reconstruct the event details.
+
 Expectations:
-- The episodic record MUST capture **chronological user experiences** with temporal context, not generic advice.
-- `summary` (≤80 words) is a narrative combining What → When → Who/Where → Outcome, preserving the user's personal timeline.
-- `detail` elaborates the event context:
-  - "session_id": **MANDATORY** - The exact Session ID from attachments.session_ids (first item if multiple).
-  - "situation": Background and setting (location, participants, user state before event).
-  - "actions": Concrete user actions or events that occurred (chronologically ordered).
-  - "results": Outcomes, user reactions, state changes, or follow-up events.
-  - "temporal_context": Timeline anchors extracted from attachments (dates, temporal_cues, sequences).
-  - "entities_involved": Key people, places, objects from the event.
-  - "facts": Atomic facts from attachments.facts for verification.
-- Preserve temporal reasoning cues ("first time", "after X", "before Y", specific dates) to support "when/how long/order" questions.
-- `tags` should mix:
-  - Event type: "user-event", "user-preference", "user-timeline", "user-relationship"
-  - Domain: "car", "travel", "health", "shopping", "finance", "work", "hobby"
-  - Temporal markers: "temporal-fact", "episodic-experience"
-  - Entity names when distinctive (e.g., "gps-system", "dealership")
+- The episodic record MUST capture the **user's action or experience** described in the WorkingSlot.
+- `summary` (≤80 words): Rewrite the slot's summary into a narrative: What the user DID → When (if known) → Context → Outcome.
+  - If no explicit date, use "at some point" or "during a conversation" as temporal anchor.
+- `detail` MUST be fully populated using inference from the slot content:
+  - "session_id": Extract from `attachments.session_ids.items[0]`. If empty, use "unknown_session".
+  - "situation": Infer from `topic` and `summary` - what was the user's context/goal?
+  - "actions": Extract or infer user actions from `summary` and `attachments.facts`. NEVER leave empty - at minimum, paraphrase the summary as an action.
+  - "results": Infer outcomes from `summary`. If no explicit outcome, state "outcome not specified" or infer likely result.
+  - "temporal_context": 
+    - "dates": Copy from `attachments.dates.items`. If empty, use `["date not specified"]`.
+    - "temporal_cues": Copy from `attachments.temporal_cues.items`. If empty, use `["timing not specified"]`.
+    - "sequence": Describe event order if multiple actions, otherwise "single event".
+  - "entities_involved": Copy from `attachments.entities.items`. If empty, extract key nouns from summary.
+  - "facts": Copy from `attachments.facts.items`. If empty, extract key facts from summary.
+
+**INFERENCE RULES (IMPORTANT)**:
+- If `attachments.dates` is empty: set `temporal_context.dates` to `["date not specified"]`, NOT empty list.
+- If `attachments.temporal_cues` is empty: set `temporal_context.temporal_cues` to `["timing not specified"]`, NOT empty list.
+- If `attachments.facts` is empty: extract facts from the `summary` field.
+- If `attachments.entities` is empty: extract entity names from `summary` and `topic`.
+- NEVER return empty arrays `[]` for actions, results, entities_involved, or facts.
 
 <working-slot>
 {dump_slot_json}
 </working-slot>
 
-Output STRICTLY as JSON inside the tags:
+Output STRICTLY as JSON inside the tags (ALL fields must be non-empty):
 <episodic-record>
 {{
     "stage": "{stage}",
-    "summary": "≤80 word What → When → Who/Where → Outcome narrative preserving user's personal experience",
+    "summary": "Rewritten narrative: User [ACTION] [WHEN if known] [CONTEXT] [OUTCOME]. Example: 'User sought band recommendations similar to The Electric Storm after attending their concert at a music festival. Looking for similar indie rock artists.'",
     "detail": {{
-        "session_id": "exact session ID from attachments.session_ids[0] (e.g., 'answer_4be1b6b4_2')",
-        "situation": "Background context, user state, setting (e.g., 'User owns new car, first scheduled maintenance')",
-        "actions": ["chronological user actions or events (e.g., 'brought car to dealership', 'service completed')"],
-        "results": ["outcomes and reactions (e.g., 'great experience', 'GPS issue discovered week later')"],
+        "session_id": "from attachments.session_ids.items[0], e.g., '7045db85_1'",
+        "situation": "Inferred context/goal, e.g., 'User attended The Electric Storm concert, enjoyed it, wanted to discover similar music'",
+        "actions": ["NEVER EMPTY - at minimum paraphrase summary, e.g., 'attended The Electric Storm concert', 'asked for similar band recommendations'"],
+        "results": ["Inferred or stated outcomes, e.g., 'received recommendations', 'outcome not explicitly stated'"],
         "temporal_context": {{
-            "dates": ["extracted dates from attachments (e.g., 'March 15th', '3/22', '2023/04/10')"],
-            "temporal_cues": ["relative timing (e.g., 'first time', 'after first service', 'one week later')"],
-            "sequence": "optional: event ordering description if multiple events"
+            "dates": ["from attachments or 'date not specified'"],
+            "temporal_cues": ["from attachments or 'timing not specified'"],
+            "sequence": "event order description or 'single event'"
         }},
-        "entities_involved": ["people, places, products, services from attachments.entities"],
-        "facts": ["atomic facts from attachments.facts for verification"]
+        "entities_involved": ["NEVER EMPTY - extract from summary/topic, e.g., 'user', 'The Electric Storm', 'Music Festival'"],
+        "facts": ["NEVER EMPTY - from attachments.facts or extract from summary, e.g., 'user attended Electric Storm concert', 'user seeking similar band recommendations'"]
     }},
-    "tags": ["user-event or user-timeline or user-preference", "domain-hint", "temporal-fact", "episodic-experience"]
+    "tags": ["event-type", "domain", "episodic-experience"]
 }}
 </episodic-record>
 """)
