@@ -5,7 +5,7 @@ import json
 
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field, field_validator, validate_call
-from typing import Dict, Iterable, List, Literal, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Literal, Optional, Tuple, Union, Set
 from memory.memory_system import (
     FaissVectorStore,
     SemanticRecord,
@@ -125,8 +125,6 @@ class FAISSMemorySystem(MemorySystem):
         except Exception as e:
             print(f"Error updating memories: {e}")
             return False
-        self.vector_store.update(memories) # Update new memory to FAISS vectorstore.
-        return True
     
     def delete(self, mids: List[str]) -> bool:
         try:
@@ -237,13 +235,17 @@ class FAISSMemorySystem(MemorySystem):
                 response = await self.llm.complete(system_prompt=system_prompt, user_prompt=user_prompt)
 
                 # 1. Create new SemanticRecord, 2. Mark is_abstracted = True, 3. Set cluster_id, 4. Add to result list
-                sem_record_dict = json.loads(response)
-                sem_record_dict['id'] = new_id("sem")
-                sem_record = SemanticRecord.from_dict(sem_record_dict)
-                sem_record.is_abstracted = True
-                sem_record.cluster_id = cl.id
-                abstract_result.append(sem_record)
-                cidmap2semrec[cl.id] = sem_record
+                try:
+                    sem_record_dict = json.loads(response)
+                    sem_record_dict['id'] = new_id("sem")
+                    sem_record = SemanticRecord.from_dict(sem_record_dict)
+                    sem_record.is_abstracted = True
+                    sem_record.cluster_id = cl.id
+                    abstract_result.append(sem_record)
+                    cidmap2semrec[cl.id] = sem_record
+                except Exception as e:
+                    print(f"Error parsing semantic record from LLM response: {e}")
+                    continue
         
         return abstract_result, cidmap2semrec
 

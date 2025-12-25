@@ -422,113 +422,77 @@ Output STRICTLY as JSON within the tags below (no extra commentary):
 TRANSFER_CHAT_AGENT_CONTEXT_TO_WORKING_SLOT_PROMPT = dedent("""
 Convert the Chat Agent workflow context into at most {max_slots} WorkingSlot entries ready for filtering/routing.
 
-This prompt is designed for LongMemEval-style multi-session chat history, where users discuss life events, preferences, and activities across many sessions. The goal is to store **concrete user actions and experiences** that help answer future questions about what the user did, when, and in what sequence.
+This snapshot is GUARANTEED to correspond to EXACTLY ONE unique session_id.
 
-**PRIORITY: Capture what the user DID (episodic events), not what the user IS (semantic attributes).**
+========================
+HARD CONSTRAINTS (MUST)
+========================
+1) SINGLE SESSION ID (NO GUESSING):
+- You MUST locate the single unique Session ID in the snapshot.
+- NEVER fabricate session IDs. NEVER use placeholders like "unknown_session".
 
-A slot SHOULD be created if and only if it contains:
-  (A) **PRIMARY (Strongly Preferred)**: Episodic experience: chronological user actions, events, or activities with timestamps or relative timing that enables temporal reasoning (e.g., "user bought X on date Y", "user visited Z before event W", "user experienced problem P after doing Q").
-  OR
-  (B) **SECONDARY (Only if no episodic content)**: User preferences or relationships that emerge FROM user actions (e.g., "user repeatedly chooses X" implies preference, not "user likes X" stated in isolation).
+2) AT LEAST ONE SLOT IF SESSION ID EXISTS:
+- If and only if a valid single Session ID is found, you MUST output AT LEAST 1 slot.
+- If no storeworthy user/assistant action or preference exists, output ONE fallback slot:
+  - stage="meta"
+  - topic like "no storeworthy info in session"
+  - summary states: no concrete user/assistant actions/preferences found in this session
+  - Still include required attachments with the real session_id
 
-**What to PRIORITIZE (capture these first):**
-- User actions: purchases, trips, appointments, activities, services, decisions, experiences
-- User events: things that happened TO the user (problems, milestones, encounters)
-- Temporal sequences: "first time doing X", "did Y after Z", "experienced A then B"
-- Concrete instances: "bought new car on March 15th" > "owns a car"
+3) SESSION ID MUST BE PRESENT IN EVERY SLOT:
+- Every produced slot MUST include attachments.session_ids.items == [THE_SESSION_ID].
+- Do NOT output any slot without session_id in attachments.
+- Do NOT include any other session ids.
 
-**What to DEPRIORITIZE (only capture if no episodic content available):**
-- Static attributes: "user owns X", "user is Y" (unless tied to an acquisition event)
-- Abstract preferences: "user likes X" (unless derived from repeated actions)
-- Generic relationships: "user knows person Y" (unless tied to a specific interaction)
+========================
+WHAT TO EXTRACT (NOT mutually exclusive)
+========================
+A) USER ACTIONS / EXPERIENCES -> episodic slots (user_event or user_timeline)
+B) USER PREFERENCES / STABLE TASTES -> user_preference slots (semantic-evidence)
+C) ASSISTANT ACTIONS that materially affected outcome -> episodic slots (user_event or meta)
 
-**What to IGNORE completely:**
-- Generic assistant advice or explanations (e.g., "Here are some tips for...").
-- Ephemeral chatter without concrete user facts.
-- Pure assistant responses with no user-specific information.
-- Summary statements like "user is interested in X" without concrete supporting actions.
-
-Context Snapshot (may include multiple sessions with Session IDs and dates):
+========================
+Context Snapshot:
 <chat-context>
 {snapshot}
 </chat-context>
 
 Authoring rules:
-1. Each slot MUST capture a single user action, event, or experience (NOT a static attribute).
-2. `stage` MUST be one of (in order of preference):
-   - **user_event** (HIGHEST PRIORITY)      # concrete actions/events: purchased, traveled, experienced, encountered, tried, visited, used
-   - **user_timeline** (HIGH PRIORITY)      # temporal sequences: "did X before Y", "first/second/last time doing Z", "X days after Y"
-   - user_preference                        # ONLY if derived from repeated actions (e.g., "user always chooses X", "user repeatedly visits Y")
-   - user_relationship                      # ONLY if tied to specific interaction (e.g., "user met person Y at event Z", NOT just "user knows Y")
-   - meta                                   # cross-session patterns (e.g., "user asks about topic X every Monday")
+1. Output 1..{max_slots} slots IF a valid single session_id exists.
+2. Each slot MUST capture a single action/event/timeline OR a single inferred preference OR a single assistant-action episode.
+3. `stage` MUST be one of: user_event, user_timeline, user_preference, user_relationship, meta
+4. `summary` MUST be ≤80 words and action-focused.
+5. `topic` is a 3–6 word slug (lowercase, space-separated).
+6. `attachments` is REQUIRED and MUST include ALL keys:
+   - "session_ids": {{"items": [THE_SESSION_ID]}}  # REQUIRED, singleton
+   - "dates": {{"items": []}}                      # if no explicit date, use ["date not specified"]
+   - "entities": {{"items": []}}
+   - "facts": {{"items": []}}                      # NEVER empty
+   - "temporal_cues": {{"items": []}}              # if no cues, use ["timing not specified"]
+7. For episodic slots, `dates` and `temporal_cues` MUST be non-empty (use the fallback strings above).
 
-3. `summary` MUST be ≤80 words, ACTION-FOCUSED, and follow:
-   - **For events (PREFERRED)**: WHO (user) → DID WHAT (action/event) → WHEN (timestamp) → DETAILS (context/outcome)
-     Example: "User brought new car to dealership for first service on March 15th. Service completed successfully."
-   - **For timeline (PREFERRED)**: EVENT A (action) → TEMPORAL RELATION → EVENT B (action) → OUTCOME
-     Example: "User experienced GPS malfunction on 3/22, one week after first car service on March 15th. Returned to dealership, got system replaced."
-   - For preferences: ONLY if pattern emerges: "User has [ACTION PATTERN] → INFERRED PREFERENCE → SUPPORTING INSTANCES"
-     Example: "User consistently chooses Shell gas stations over competitors. Observed in 5 sessions (dates: ...)."
+`tags` policy:
+- tags ≤6 lowercase.
+- Must include either "episodic-experience" (events/timelines/assistant-actions) or "semantic-evidence" (preferences).
+- Add "assistant-action" tag when describing assistant actions.
 
-4. `topic` is a 3–6 word slug referencing the **ACTION or EVENT** (lowercase, space-separated),
-   e.g. "car first service event", "gps system replacement experience", "dealership visit march 15th".
-   AVOID static topics like "car ownership" or "gas station preference" unless tied to specific actions.
-
-5. `attachments` is **REQUIRED** and MUST include:
-   - "session_ids": {{"items": []}}   # **MANDATORY**: Session ID(s) from context (e.g., ["sharegpt_yywfIrx_0"])
-   - "dates": {{"items": []}}         # **CRITICAL for episodic**: event dates, session dates (e.g., ["2023/04/10", "March 15th", "3/22"])
-   - "entities": {{"items": []}}      # actors, places, objects involved in the ACTION (e.g., ["user", "dealership", "GPS system", "new car"])
-   - "facts": {{"items": []}}         # **ACTION-FOCUSED**: what user DID, not what user IS (e.g., ["brought car for service on March 15th", "GPS replaced after malfunction"])
-   - "temporal_cues": {{"items": []}} # **CRITICAL for episodic**: "first time", "before", "after", "on March 15th", "one week later", "3/22"
-
-6. `tags` is a list of lowercase keywords (≤5 items) mixing:
-   - **ACTION verbs (REQUIRED for episodic)**: "purchased", "visited", "experienced", "tried", "used", "encountered"
-   - Domain hints: "car","travel","finance","health","shopping","home","work","hobby"
-   - **Memory type (IMPORTANT)**: 
-     - "episodic-experience" (use for >80% of slots - user actions/events)
-     - "temporal-fact" (use when slot connects multiple events in time)
-     - "semantic-evidence" (RARE - only for preference patterns derived from multiple actions)
-     - "user-preference" (RARE - only if clear pattern from repeated actions)
-
-**CRITICAL QUALITY BAR:**
-- If context contains BOTH actions and static facts, prioritize the ACTIONS.
-- Example: Context says "User owns a new car. Got it serviced on March 15th."
-  - ✅ CREATE SLOT: "User brought new car for first service on March 15th."
-  - ❌ DON'T CREATE SLOT: "User owns a new car."
-- If only static facts exist with no actions, create slots ONLY if they can be tied to acquisition/usage events.
-- Every slot MUST have `attachments.session_ids` populated for provenance tracking.
-- Every episodic slot MUST have non-empty `attachments.dates` and `attachments.temporal_cues`.
-
-Output STRICTLY as JSON within the tags below (no extra commentary):
+Output STRICTLY as JSON (no extra commentary):
 {{
-    "slots": [
-        {{
-            "stage": "user_event",
-            "topic": "car first service event",
-            "summary": "User brought new car to dealership for first service on March 15th. Service was completed, described as great experience.",
-            "attachments": {{
-                "session_ids": {{"items": ["answer_4be1b6b4_2"]}},
-                "dates": {{"items": ["March 15th", "2023/04/10"]}},
-                "entities": {{"items": ["user", "new car", "dealership", "car service"]}},
-                "facts": {{"items": ["brought car to dealership on March 15th", "first service completed", "great experience"]}},
-                "temporal_cues": {{"items": ["first time", "on March 15th"]}}
-            }},
-            "tags": ["car","service","episodic-experience","temporal-fact","visited"]
-        }},
-        {{
-            "stage": "user_timeline",
-            "topic": "gps malfunction and repair sequence",
-            "summary": "User experienced GPS system malfunction on 3/22, one week after first car service on March 15th. Returned to dealership, entire GPS system replaced, now working flawlessly.",
-            "attachments": {{
-                "session_ids": {{"items": ["answer_4be1b6b4_3"]}},
-                "dates": {{"items": ["3/22", "March 15th", "2023/04/10"]}},
-                "entities": {{"items": ["user", "GPS system", "dealership"]}},
-                "facts": {{"items": ["GPS malfunction on 3/22", "returned to dealership", "system replaced", "now working"]}},
-                "temporal_cues": {{"items": ["on 3/22", "one week after first service", "after March 15th"]}}
-            }},
-            "tags": ["car","gps","episodic-experience","temporal-fact","experienced","encountered"]
-        }}
-    ]
+  "slots": [
+    {{
+      "stage": "meta",
+      "topic": "no storeworthy info in session",
+      "summary": "No concrete user/assistant actions or stable preferences were found in this session; recorded as a coverage marker.",
+      "attachments": {{
+        "session_ids": {{"items": ["THE_SESSION_ID"]}},
+        "dates": {{"items": ["date not specified"]}},
+        "entities": {{"items": ["user", "assistant"]}},
+        "facts": {{"items": ["no storeworthy user/assistant action/preference detected in this session"]}},
+        "temporal_cues": {{"items": ["timing not specified"]}}
+      }},
+      "tags": ["episodic-experience","meta","assistant-action"]
+    }}
+  ]
 }}
 """)
 
@@ -762,7 +726,7 @@ Expectations:
 - `summary` (≤80 words): Rewrite the slot's summary into a narrative: What the user DID → When (if known) → Context → Outcome.
   - If no explicit date, use "at some point" or "during a conversation" as temporal anchor.
 - `detail` MUST be fully populated using inference from the slot content:
-  - "session_id": Extract from `attachments.session_ids.items[0]`. If empty, use "unknown_session".
+  - "session_id": MUST be extracted from `attachments.session_ids.items[0]`.
   - "situation": Infer from `topic` and `summary` - what was the user's context/goal?
   - "actions": Extract or infer user actions from `summary` and `attachments.facts`. NEVER leave empty - at minimum, paraphrase the summary as an action.
   - "results": Infer outcomes from `summary`. If no explicit outcome, state "outcome not specified" or infer likely result.

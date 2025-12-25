@@ -1,0 +1,1 @@
+bash run_generation_amem.sh /hpc_stor03/sjtu_home/zijian.wang/MemPrism/LongMemEval/data/longmemeval_s_cleaned.json gpt-4o-mini amem 50 json false direct none .json

@@ -1,0 +1,1 @@
+bash run_generation_memprism.sh /hpc_stor03/sjtu_home/zijian.wang/MemPrism/LongMemEval/data/longmemeval_s_cleaned.json gpt-4o-mini memprism 50 json false direct none .json

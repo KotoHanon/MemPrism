@@ -1,4 +1,4 @@
-import sys
+import sys, os
 import json
 from tqdm import tqdm
 import openai
@@ -17,11 +17,10 @@ from memory.memory_system.utils import (
     _safe_dump_str,
     _multi_thread_run,
 )
-from memory.api.faiss_memory_system_api import FAISSMemorySystem
-from memory.api.slot_process_api import SlotProcess
-from memory.memory_system.models import EpisodicRecord
-from memory.memory_system.working_slot import WorkingSlot
+from inference.amem.memory_system import AgenticMemorySystem
 from textwrap import dedent
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def parse_args():
@@ -55,7 +54,7 @@ def check_args(args):
     print(args)
 
 
-def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, history_format: str, cot: bool, tokenizer, tokenizer_backend, max_retrieval_length, merge_key_expansion_into_value, slot_process_vllm, slot_process_openai, semantic_memory_system, episodic_memory_system, con=False, con_client=None, con_model=None, max_workers=50):    
+def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, history_format: str, cot: bool, tokenizer, tokenizer_backend, max_retrieval_length, merge_key_expansion_into_value, memory_system, con=False, con_client=None, con_model=None):    
     if retriever_type == 'no-retrieval':
         answer_prompt_template = '{}'
         if cot:
@@ -127,52 +126,19 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
             else:
                 retrieved_chunks += [(session_date, x) for x in session_entry]
 
-    elif retriever_type == "memprism-session":
-        idmap2entry = {}
-        context_list = []
-        for session_date, session_entry, session_id in zip(entry['haystack_dates'], entry['haystack_sessions'], entry['haystack_session_ids']):
-            idmap2entry[session_id] = (session_date, session_entry)
-
+    elif retriever_type == "amem-session":
+        for session_date, session_entry in zip(entry['haystack_dates'], entry['haystack_sessions']):
             if useronly:
                 retrieved_chunks.append((session_date, [x for x in session_entry if x['role'] == 'user']))
-                session_str = _safe_dump_str([x for x in session_entry if x['role'] == 'user'])
+                session_str_list = [_safe_dump_str(x) for x in session_entry if x['role'] == 'user']
             else:
                 retrieved_chunks.append((session_date, session_entry))
-                session_str = _safe_dump_str(session_entry)
-            context = dedent(f"""
-            Here is a chat session between you and a user:
-            Session ID: {session_id}
-            Session Content: {session_str}
-            """)
-            context_list.append(context)
-    
-        # transfer chat context to working slots, filter and route slots, and transfer slots to memory
-        _multi_thread_run(slot_process_vllm.transfer_chat_agent_context_to_working_slots, context_list, max_workers=10)
-        working_slots = slot_process_vllm.total_working_slots.copy()
-        print(f"[Info] Transferring session {session_id} to memories, number of working slots: {len(working_slots)}")
-        _multi_thread_run(slot_process_openai.multi_thread_filter_and_route_slot, working_slots, max_workers=max_workers)
+                session_str_list = [_safe_dump_str(x) for x in session_entry]
 
-        _multi_thread_run(slot_process_openai.multi_thread_transfer_slot_to_memory, slot_process_openai.routed_slot_container, max_workers=max_workers)
-        asyncio.run(multi_thread_transfer_dicts_to_memories(slot_process_openai, semantic_memory_system, episodic_memory_system))
-        
-        print(f"[Info] Finished transferring, size of semantic memory: {semantic_memory_system.size}, size of episodic memory: {episodic_memory_system.size}")
-        
-        semantic_records, episodic_records, session_ids = get_related_information_by_query(query=question_string, slot_process=slot_process_vllm, working_slots=working_slots, semantic_memory_system=semantic_memory_system, episodic_memory_system=episodic_memory_system)
+            for context in session_str_list:
+                # add to context list, per turn
+                memory_system.add_note(context)
 
-        # clean up retrieved chunks
-        retrieved_chunks = []
-
-        for session_id in session_ids:
-            if session_id in idmap2entry.keys():
-                session_date, session_entry = idmap2entry[session_id]
-                if useronly:
-                    retrieved_chunks.append((session_date, [x for x in session_entry if x['role'] == 'user']))
-                else:
-                    retrieved_chunks.append((session_date, session_entry))
-        
-        print(f"[Info] Retrieved {len(retrieved_chunks)} sessions from MemPrism for question: {question_string}")
-
-            
     # get retrieved chunks
     elif retriever_type == "flat-turn":
         for ret_result_entry in entry['retrieval_results']['ranked_items']:
@@ -317,16 +283,6 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
         else:
             raise NotImplementedError
 
-        semantic_memories_str = ""
-        episodic_memories_str = ""
-
-        if len(semantic_records) > 0:
-            semantic_memories_str = "\n".join(f"- {record.summary}" for record in semantic_records)
-        if len(episodic_records) > 0:
-            episodic_memories_str = "\n".join(f"- {_safe_dump_str(record.detail)}" for record in episodic_records[:9])        
-
-        history_string += f'\n### Related Semantic Memory: {semantic_memories_str}\n### Related Episodic Memory: {episodic_memories_str}\n'
-
     assert retriever_type == "no-retrieval" or history_string != ""
     if retriever_type == "no-retrieval":
         prompt = answer_prompt_template.format(question_string)
@@ -346,85 +302,18 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
                 history_string = tokenizer.decode(encoded_input['input_ids'][0], skip_special_tokens=True)
         else:
             raise NotImplementedError
+
+        relevant_memories = memory_system.search_agentic(question_string, k=20)
+
+        if len(relevant_memories) > 0:
+            relevant_memories_str = "\n".join(f"- {memory['content']}" for memory in relevant_memories)       
+
+        history_string += f'\n### Related Memory: {relevant_memories_str}\n'
+        
         prompt = answer_prompt_template.format(history_string, question_date_string, question_string)
 
     return prompt
 
-async def multi_thread_transfer_dicts_to_memories(slot_process: SlotProcess, semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, is_abstract: bool = False):
-    semantic_records = []
-    episodic_records = []
-
-    for i in slot_process.memory_dict:
-        if i['memory_type'] == 'semantic':
-            semantic_records.append(semantic_memory_system.instantiate_sem_record(**i['input']))
-        elif i['memory_type'] == 'episodic':
-            episodic_records.append(episodic_memory_system.instantiate_epi_record(**i['input']))
-    
-    if is_abstract and len(episodic_records) > 0:
-        await abstract_episodic_records_to_semantic_record(episodic_records, semantic_memory_system, episodic_memory_system)
-
-    if len(semantic_records) > 0:
-        try:
-            semantic_memory_system.upsert_normal_records(semantic_records)
-        except Exception as e:
-            import traceback
-            print("[ERROR] upsert_normal_records for semantic_records failed:", repr(e))
-            traceback.print_exc()
-    if len(episodic_records) > 0:
-        try:
-            episodic_memory_system.upsert_normal_records(episodic_records)
-        except Exception as e:
-            import traceback
-            print("[ERROR] upsert_normal_records for episodic_records failed:", repr(e))
-            traceback.print_exc()
-
-async def abstract_episodic_records_to_semantic_record(epi_records: List[EpisodicRecord], semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, consistency_threshold: float = 0.8):
-    try:
-        abstract_result, cidmap2semrec = await episodic_memory_system.abstract_episodic_records(epi_records, consistency_threshold)
-        print(f"[Info] Number of abstracted semantic records: {len(abstract_result)}")
-        semantic_memory_system.upsert_abstract_semantic_records(abstract_result, cidmap2semrec)
-    except Exception as e:
-        import traceback
-        print("[ERROR] abstract_episodic_records_to_semantic_record failed:", repr(e))
-        traceback.print_exc()
-
-def reset_memprism_system(args):
-    if "gpt" in args.model_name.lower():
-        llm_backend = "openai"
-    else:
-        llm_backend = "vllm"
-
-    slot_process_vllm = SlotProcess(llm_name="qwen3-4b", llm_backend="vllm", task="chat")
-    slot_process_openai = SlotProcess(llm_name="gpt-4o-mini", llm_backend="openai", task="chat")
-    semantic_memory_system = FAISSMemorySystem(memory_type="semantic", llm_model=args.model_alias, llm_backend=llm_backend)
-    episodic_memory_system = FAISSMemorySystem(memory_type="episodic", llm_model=args.model_alias, llm_backend=llm_backend)
-
-    '''slot_process = SlotProcess(task="chat")
-    semantic_memory_system = FAISSMemorySystem(llm_backend="openai")
-    episodic_memory_system = FAISSMemorySystem(llm_backend="openai")'''
-
-    return slot_process_vllm, slot_process_openai, semantic_memory_system, episodic_memory_system
-
-def get_related_information_by_query(query: str, slot_process: SlotProcess, working_slots: List[WorkingSlot], semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, limit: int = 50):
-    semantic_query_results = semantic_memory_system.query(query, limit=limit)
-    episodic_query_results = episodic_memory_system.query(query, limit=limit)
-    slots_query_results = slot_process.query(query, working_slots, limit=limit)
-
-    semantic_records = [record for score, record in semantic_query_results]
-    episodic_records = [record for score, record in episodic_query_results]
-    slots = [slot for score, slot in slots_query_results]
-    session_ids = []
-    
-    for slot in slots:
-        session_id = slot.attachments.get("session_ids").get("items", [])[0]
-        if session_id is not None:
-            session_ids.append(session_id)
-    
-    # duplicate removal
-    session_ids = list(set(session_ids))
-    print(len(session_ids), "related sessions retrieved from working slots.")
-    
-    return semantic_records, episodic_records, session_ids
 
 
 @backoff.on_exception(backoff.constant, (openai.RateLimitError), 
@@ -442,7 +331,11 @@ def main(args):
         base_url=args.openai_base_url,
     )
 
-    slot_process_vllm, slot_process_openai, semantic_memory_system, episodic_memory_system = reset_memprism_system(args)
+    memory_system = AgenticMemorySystem(
+        model_name='all-MiniLM-L6-v2',
+        llm_backend="openai",
+        llm_model="gpt-4o-mini" 
+    )
 
     try:
         in_data = json.load(open(args.in_file))
@@ -494,18 +387,20 @@ def main(args):
             prompt = prepare_prompt(entry, args.retriever_type, args.topk_context, args.useronly=='true',
                                     args.history_format, args.cot=='true', 
                                     tokenizer=tokenizer, tokenizer_backend=tokenizer_backend, max_retrieval_length=max_retrieval_length,
-                                    merge_key_expansion_into_value=args.merge_key_expansion_into_value, slot_process_vllm=slot_process_vllm, slot_process_openai=slot_process_openai,
-                                    semantic_memory_system=semantic_memory_system, episodic_memory_system=episodic_memory_system,
+                                    merge_key_expansion_into_value=args.merge_key_expansion_into_value, memory_system=memory_system,
                                     con=True, con_client=client, con_model=args.model_name)
         else:
             prompt = prepare_prompt(entry, args.retriever_type, args.topk_context, args.useronly=='true',
                                     args.history_format, args.cot=='true', 
                                     tokenizer=tokenizer, tokenizer_backend=tokenizer_backend, max_retrieval_length=max_retrieval_length,
-                                    merge_key_expansion_into_value=args.merge_key_expansion_into_value, slot_process_vllm=slot_process_vllm, slot_process_openai=slot_process_openai,
-                                    semantic_memory_system=semantic_memory_system, episodic_memory_system=episodic_memory_system,)
+                                    merge_key_expansion_into_value=args.merge_key_expansion_into_value, memory_system=memory_system)
 
-        # reset MemPrism system after each example
-        slot_process_vllm, slot_process_openai, semantic_memory_system, episodic_memory_system = reset_memprism_system(args)
+        # reset AMem system after each example
+        memory_system = AgenticMemorySystem(
+            model_name='all-MiniLM-L6-v2',
+            llm_backend="openai",
+            llm_model="gpt-4o-mini" 
+        )
 
         try:
             print(json.dumps({'question_id': entry['question_id'], 'question': entry['question'], 'answer': entry['answer']}, indent=4), flush=True)
