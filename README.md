@@ -1,1 +1,3 @@
 # MemPrism
+
+![](./assets/MemPrism.png)

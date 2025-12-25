@@ -33,7 +33,7 @@ model=${model_zoo["$model_alias"]}
 
 if [[ $model_alias == "gpt-4o" || $model_alias == "gpt-4o-mini" ]]; then
     # will call openai server
-    openai_base_url_flag=""
+    openai_base_url_flag="--openai_base_url https://api.xi-ai.cn/v1"
     openai_key=""
     openai_org_flag="--openai_organization YOUR_ORGANIZATION"   # uclanlp
 else

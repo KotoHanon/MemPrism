@@ -321,7 +321,7 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
         episodic_memories_str = ""
 
         if len(semantic_records) > 0:
-            semantic_memories_str = "\n".join(f"- {record.summary}" for record in semantic_records)
+            semantic_memories_str = "\n".join(f"- {record.summary}" for record in semantic_records[:9])
         if len(episodic_records) > 0:
             episodic_memories_str = "\n".join(f"- {_safe_dump_str(record.detail)}" for record in episodic_records[:9])        
 
@@ -405,10 +405,26 @@ def reset_memprism_system(args):
 
     return slot_process_vllm, slot_process_openai, semantic_memory_system, episodic_memory_system
 
-def get_related_information_by_query(query: str, slot_process: SlotProcess, working_slots: List[WorkingSlot], semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, limit: int = 50):
-    semantic_query_results = semantic_memory_system.query(query, limit=limit)
+def get_related_information_by_query(query: str, slot_process: SlotProcess, working_slots: List[WorkingSlot], semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, limit: int = 75):
+    semantic_query_results = semantic_memory_system.query(query, limit=limit, threshold=0.5)
     episodic_query_results = episodic_memory_system.query(query, limit=limit)
-    slots_query_results = slot_process.query(query, working_slots, limit=limit)
+
+    keyword_prompt = f"Given a query: \n{query}\nExtract the 5 keywords that can represent the main idea of the query in a space-separated format. For example, if the query is 'What are the health benefits of regular exercise?', the keywords could be 'health benefits exercise'. You also can use phrases as keywords. Please only output the keywords without any additional explanation."
+    kwargs = {
+        'model': "gpt-4o-mini",
+        'messages':[
+            {"role": "user", "content": keyword_prompt}
+        ],
+        'n': 1,
+        'temperature': 0,
+        'max_tokens': 100,
+        }
+    client = OpenAI(
+        api_key=args.openai_key,
+        base_url=args.openai_base_url,
+    )
+    key_words = chat_completions_with_backoff(client, **kwargs).choices[0].message.content.strip()
+    slots_query_results = slot_process.query(query, working_slots, key_words=key_words.split(), limit=limit, use_svd=True, embed_func=semantic_memory_system.vector_store._embed)
 
     semantic_records = [record for score, record in semantic_query_results]
     episodic_records = [record for score, record in episodic_query_results]
