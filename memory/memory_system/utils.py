@@ -226,3 +226,16 @@ def _drain_snapshot(event_buffer: List[str], max_chars: int = 4000) -> str:
 def _multi_thread_run(func, row_data: List[Tuple], max_workers: int = 20):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(tqdm(executor.map(func, row_data), total=len(row_data)))
+
+def _extract_session_id_from_context(context: str) -> str:
+    """
+    Extract the session_id from a context string that contains a line like:
+    'Session ID: <id>'
+    Raises ValueError if not found or ambiguous.
+    """
+    _SESSION_ID_RE = re.compile(r"(?mi)^\s*Session ID:\s*([^\r\n]+)\s*$")
+    matches = _SESSION_ID_RE.findall(context or "")
+    matches = [m.strip() for m in matches if m.strip()]
+    if len(matches) != 1:
+        raise ValueError(f"Expected exactly 1 session_id in context, found {len(matches)}: {matches}")
+    return matches[0]

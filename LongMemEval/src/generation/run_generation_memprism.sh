@@ -14,6 +14,7 @@ useronly=${6:-"false"}
 reading_method=${7:-"con"}
 merge_key_expansion_into_value=${8:-"none"}
 suffix=${9:-"none"}
+resume_file=${10:-"none"}
 
 declare -A model_zoo
 model_zoo["gpt-4o"]="gpt-4o-2024-08-06"
@@ -34,7 +35,7 @@ model=${model_zoo["$model_alias"]}
 if [[ $model_alias == "gpt-4o" || $model_alias == "gpt-4o-mini" ]]; then
     # will call openai server
     openai_base_url_flag="--openai_base_url https://api.xi-ai.cn/v1"
-    openai_key=""
+    openai_key="sk-CTESuyV0v4QQncBZBd291d85EbC94c2795698e1cA84f65Ca"
     openai_org_flag="--openai_organization YOUR_ORGANIZATION"   # uclanlp
 else
     # will call an openai server emulator served by e.g., vllm locally
@@ -87,4 +88,5 @@ python run_generation_memprism.py \
        --topk_context ${topk_context} \
        --history_format ${history_format} \
        --useronly ${useronly} \
+       --resume_file ${resume_file} \
        ${reading_flags}

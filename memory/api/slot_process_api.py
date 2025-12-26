@@ -1,6 +1,7 @@
 import json
 import asyncio
 import numpy as np
+import re
 
 from typing import Dict, Iterable, List, Literal, Optional, Tuple, Union, Any
 from collections import deque
@@ -14,6 +15,7 @@ from memory.memory_system.utils import (
     compute_overlap_score,
     new_id,
     now_iso,
+    _extract_session_id_from_context,
 )
 from memory.memory_system.user_prompt import (
     WORKING_SLOT_COMPRESS_USER_PROMPT,
@@ -205,12 +207,217 @@ class SlotProcess:
         text = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
         return text
 
+    def _retry_llm_to_slots(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        json_schema: dict,
+        schema_name: str,
+        allowed_keys: set,
+        max_slots: int,
+        max_retries: int = 5,
+        max_tokens: int = 4096,
+        post_process_slot: Optional[Callable[[dict, str], dict]] = None,
+        context: Optional[str] = None,
+        is_async: bool = False,
+    ) -> List[WorkingSlot]:
+        """
+        Generic retry wrapper for LLM -> WorkingSlot conversion.
+        
+        Args:
+            system_prompt: System prompt for LLM.
+            user_prompt: User prompt for LLM.
+            json_schema: JSON schema for structured output.
+            schema_name: Name of the schema.
+            allowed_keys: Allowed keys in slot dict for validation.
+            max_slots: Maximum number of slots to return.
+            max_retries: Number of retry attempts.
+            max_tokens: Max tokens for LLM response.
+            post_process_slot: Optional callable(slot_dict, context) -> slot_dict for per-slot post-processing.
+            context: Original context string (passed to post_process_slot if provided).
+            is_async: If True, use asyncio.run; otherwise assume already in async context.
+        
+        Returns:
+            List of valid WorkingSlot objects.
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                if is_async:
+                    response = asyncio.run(self.llm_model.complete(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        json_schema=json_schema,
+                        schema_name=schema_name,
+                        strict=False,
+                        max_tokens=max_tokens
+                    ))
+                else:
+                    # For async methods, we need to await directly
+                    # This branch is used when called from sync context
+                    response = asyncio.run(self.llm_model.complete(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        json_schema=json_schema,
+                        schema_name=schema_name,
+                        strict=False,
+                        max_tokens=max_tokens
+                    ))
+            except Exception as e:
+                last_error = e
+                print(f"[Retry {attempt}/{max_retries}] LLM call error: {e}")
+                continue
+
+            try:
+                data = json.loads(response)
+                if not data:
+                    raise ValueError("Empty JSON response")
+            except Exception as e:
+                last_error = e
+                print(f"[Retry {attempt}/{max_retries}] JSON parsing error: {e}")
+                continue
+
+            slots_data = data.get("slots", [])
+            if not isinstance(slots_data, list):
+                last_error = ValueError("`slots` must be a list.")
+                print(f"[Retry {attempt}/{max_retries}] Invalid schema: `slots` must be a list.")
+                continue
+
+            working_slots: List[WorkingSlot] = []
+
+            for slot_dict in slots_data[:max_slots]:
+                if not isinstance(slot_dict, dict):
+                    continue
+
+                try:
+                    _hard_validate_slot_keys(slot_dict, allowed_keys=allowed_keys)
+
+                    # Apply post-processing if provided
+                    if post_process_slot is not None and context is not None:
+                        slot_dict = post_process_slot(slot_dict, context)
+
+                    stage = str(slot_dict.get("stage", "")).strip()
+                    topic = str(slot_dict.get("topic", "")).strip()
+                    summary = str(slot_dict.get("summary", "")).strip()
+                    attachments = slot_dict.get("attachments") or {}
+                    tags = slot_dict.get("tags") or []
+
+                    slot = WorkingSlot(
+                        stage=stage,
+                        topic=topic,
+                        summary=summary,
+                        attachments=attachments,
+                        tags=list(tags),
+                    )
+                    working_slots.append(slot)
+
+                except Exception as e:
+                    last_error = e
+                    print(f"[Retry {attempt}/{max_retries}] Error creating WorkingSlot: {e}")
+                    continue
+
+            if len(working_slots) != 0:
+                return working_slots
+
+            print(f"[Retry {attempt}/{max_retries}] No valid WorkingSlot created; retrying...")
+
+        print(f"Failed to create any WorkingSlot after {max_retries} retries. Last error: {last_error}")
+        return []
+
+    @staticmethod
+    def _post_process_chat_slot(slot_dict: dict, context: str) -> dict:
+        """Post-process chat slot to inject extracted session_id."""
+        try:
+            extracted_session_id = _extract_session_id_from_context(context)
+        except Exception as e:
+            print(f"Session ID extraction error: {e}")
+            raise
+
+        attachments = slot_dict.get("attachments") or {}
+        if not isinstance(attachments, dict):
+            attachments = {}
+        
+        session_ids = attachments.get("session_ids")
+        if not isinstance(session_ids, dict):
+            session_ids = {"items": []}
+            attachments["session_ids"] = session_ids
+        
+        session_ids["items"] = [extracted_session_id]
+        slot_dict["attachments"] = attachments
+        
+        return slot_dict
+
+    def _retry_llm_to_record(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        record_tag: str,
+        slot: WorkingSlot,
+        post_process_payload: Callable[[dict, WorkingSlot], Dict[str, Any]],
+        max_retries: int = 5,
+        max_tokens: int = 2048,
+    ) -> Dict[str, Any]:
+        """
+        Generic retry wrapper for LLM -> Record (semantic/episodic/procedural) conversion.
+        
+        Args:
+            system_prompt: System prompt for LLM.
+            user_prompt: User prompt for LLM.
+            record_tag: The XML-like tag to extract JSON from (e.g., "semantic-record").
+            slot: The source WorkingSlot (used as fallback for missing fields).
+            post_process_payload: Callable(payload_dict, slot) -> final_record_dict.
+            max_retries: Number of retry attempts.
+            max_tokens: Max tokens for LLM response.
+        
+        Returns:
+            The final record dict.
+        
+        Raises:
+            ValueError: If all retries fail.
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = asyncio.run(self.llm_model.complete(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    max_tokens=max_tokens
+                ))
+            except Exception as e:
+                last_error = e
+                print(f"[Retry {attempt}/{max_retries}] LLM call error: {e}")
+                continue
+
+            try:
+                # Clean up response
+                response = response.strip()
+                response = response.replace("<think>", "").replace("</think>", "")
+
+                payload = _extract_json_between(response, record_tag, record_tag)
+                
+                if not payload or not isinstance(payload, dict):
+                    raise ValueError(f"Empty or invalid payload extracted from <{record_tag}>")
+
+                # Apply post-processing to build final record
+                record = post_process_payload(payload, slot)
+                return record
+
+            except Exception as e:
+                last_error = e
+                print(f"[Retry {attempt}/{max_retries}] Record extraction/processing error: {e}")
+                continue
+
+        raise ValueError(f"Failed to create record after {max_retries} retries. Last error: {last_error}")
+
     async def transfer_qa_agent_context_to_working_slots(self, context: str, max_slots: int = 20) -> List[WorkingSlot]:
         system_prompt = (
-            "Your are an expert workflow archivist. "
+            "You are an expert workflow archivist. "
             "Transform the provided QA Agent context into WorkingSlot JSON objects. "
             "Each slot must capture the stage, topic, summary (≤120 words), attachments, and tags. "
-            "Summaries must follow a Situation→Action→Result narrative whenever possible."
+            "Summaries must follow a Situation→Action→Result narrative whenever possible. "
+            "You MUST output at least one slot."
         )
 
         user_prompt = TRANSFER_QA_AGENT_CONTEXT_TO_WORKING_SLOT_PROMPT.format(
@@ -220,45 +427,22 @@ class SlotProcess:
 
         schema = Schema(max_slots=max_slots)
         qa_task_slot_schema = schema.QA_TASK_SLOT_SCHEMA
-        
-        response = await self.llm_model.complete(
-            system_prompt=system_prompt, 
-            user_prompt=user_prompt, 
-            json_schema=qa_task_slot_schema, 
-            schema_name="QA_TASK_SLOT_SCHEMA",
-            strict=False)
-        data = json.loads(response)
-        if not data:
-            return []
-        
-        slots_data = data.get("slots", [])
-        if not isinstance(slots_data, list):
-            raise ValueError("`slots` must be a list.")
-        
-        working_slots: List[WorkingSlot] = []
         allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
 
-        for slot_dict in slots_data[:max_slots]:
-            if not isinstance(slot_dict, dict):
-                continue
-            _hard_validate_slot_keys(slot_dict, allowed_keys=allowed_keys)
+        working_slots = self._retry_llm_to_slots(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_schema=qa_task_slot_schema,
+            schema_name="QA_TASK_SLOT_SCHEMA",
+            allowed_keys=allowed_keys,
+            max_slots=max_slots,
+            max_retries=5,
+            max_tokens=4096,
+            post_process_slot=None,
+            context=context,
+            is_async=False,
+        )
 
-            stage = str(slot_dict.get("stage", "")).strip()
-            topic = str(slot_dict.get("topic", "")).strip()
-            summary = str(slot_dict.get("summary", "")).strip()
-            attachments = slot_dict.get("attachments") or {}
-            tags = slot_dict.get("tags") or []
-
-            slot = WorkingSlot(
-                stage=stage,
-                topic=topic,
-                summary=summary,
-                attachments=attachments,
-                tags=list(tags),
-            )
-
-            working_slots.append(slot)
-            
         return working_slots
 
     async def transfer_fc_agent_context_to_working_slots(self, context: str, max_slots: int = 50) -> List[WorkingSlot]:
@@ -266,6 +450,7 @@ class SlotProcess:
             "You are an expert tool-using agent archivist. "
             "Transform BFCL-style multi-turn tool-calling trajectories into reusable memory slots. "
             "You must distinguish Semantic evidence, Episodic experience, and Procedural experience. "
+            "You MUST output at least one slot. "
             "Output strictly as JSON."
         )
 
@@ -276,46 +461,102 @@ class SlotProcess:
 
         schema = Schema(max_slots=max_slots)
         fc_task_slot_schema = schema.FC_TASK_SLOT_SCHEMA
-
-        response = await self.llm_model.complete(
-            system_prompt=system_prompt, 
-            user_prompt=user_prompt, 
-            json_schema=fc_task_slot_schema, 
-            schema_name="FC_TASK_SLOT_SCHEMA",
-            strict=False,
-            max_tokens=4096)
-        data = json.loads(response)
-        if not data:
-            return []
-        
-        slots_data = data.get("slots", [])
-        if not isinstance(slots_data, list):
-            raise ValueError("`slots` must be a list.")
-        
-        working_slots: List[WorkingSlot] = []
         allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
 
-        for slot_dict in slots_data[:max_slots]:
-            if not isinstance(slot_dict, dict):
-                continue
-            _hard_validate_slot_keys(slot_dict, allowed_keys=allowed_keys)
+        working_slots = self._retry_llm_to_slots(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_schema=fc_task_slot_schema,
+            schema_name="FC_TASK_SLOT_SCHEMA",
+            allowed_keys=allowed_keys,
+            max_slots=max_slots,
+            max_retries=5,
+            max_tokens=4096,
+            post_process_slot=None,
+            context=context,
+            is_async=False,
+        )
 
-            stage = str(slot_dict.get("stage", "")).strip()
-            topic = str(slot_dict.get("topic", "")).strip()
-            summary = str(slot_dict.get("summary", "")).strip()
-            attachments = slot_dict.get("attachments") or {}
-            tags = slot_dict.get("tags") or []
+        return working_slots
 
-            slot = WorkingSlot(
-                stage=stage,
-                topic=topic,
-                summary=summary,
-                attachments=attachments,
-                tags=list(tags),
-            )
+    async def transfer_experiment_agent_context_to_working_slots(self, context, state: str, max_slots: int = 50) -> List[WorkingSlot]:
+        
+        if state not in {"pre_analysis", "code_plan", "code_implement", "code_judge", "experiment_execute", "experiment_analysis"}:
+            return []
 
-            working_slots.append(slot)
-            
+        snapshot = _build_context_snapshot(context, state)
+
+        system_prompt = (
+            "You are an expert workflow archivist. "
+            "Transform the provided Experiment Agent context into WorkingSlot JSON objects. "
+            "Each slot must capture the stage, topic, summary (≤120 words), attachments, and tags. "
+            "Summaries must follow a Situation→Action→Result narrative whenever possible. "
+            "You MUST output at least one slot."
+        )
+
+        user_prompt = TRANSFER_EXPERIMENT_AGENT_CONTEXT_TO_WORKING_SLOTS_PROMPT.format(
+            max_slots=max_slots,
+            snapshot=snapshot,
+        )
+
+        schema = Schema(max_slots=max_slots)
+        experiment_task_slot_schema = schema.EXPERIMENT_TASK_SLOT_SCHEMA
+        allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
+
+        working_slots = self._retry_llm_to_slots(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_schema=experiment_task_slot_schema,
+            schema_name="EXPERIMENT_TASK_SLOT_SCHEMA",
+            allowed_keys=allowed_keys,
+            max_slots=max_slots,
+            max_retries=5,
+            max_tokens=4096,
+            post_process_slot=None,
+            context=snapshot,
+            is_async=False,
+        )
+
+        return working_slots
+
+    async def transfer_experiment_agent_context_to_working_slots(self, context, state: str, max_slots: int = 50) -> List[WorkingSlot]:
+        
+        if state not in {"pre_analysis", "code_plan", "code_implement", "code_judge", "experiment_execute", "experiment_analysis"}:
+            return []
+
+        snapshot = _build_context_snapshot(context, state)
+
+        system_prompt = (
+            "You are an expert workflow archivist. "
+            "Transform the provided Experiment Agent context into WorkingSlot JSON objects. "
+            "Each slot must capture the stage, topic, summary (≤120 words), attachments, and tags. "
+            "Summaries must follow a Situation→Action→Result narrative whenever possible. "
+            "You MUST output at least one slot."
+        )
+
+        user_prompt = TRANSFER_EXPERIMENT_AGENT_CONTEXT_TO_WORKING_SLOTS_PROMPT.format(
+            max_slots=max_slots,
+            snapshot=snapshot,
+        )
+
+        schema = Schema(max_slots=max_slots)
+        experiment_task_slot_schema = schema.EXPERIMENT_TASK_SLOT_SCHEMA
+        allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
+
+        working_slots = self._retry_llm_to_slots(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_schema=experiment_task_slot_schema,
+            schema_name="EXPERIMENT_TASK_SLOT_SCHEMA",
+            allowed_keys=allowed_keys,
+            max_slots=max_slots,
+            max_retries=5,
+            max_tokens=4096,
+            post_process_slot=None,
+            context=snapshot,
+            is_async=False,
+        )
+
         return working_slots
 
     def transfer_chat_agent_context_to_working_slots(self, context: str, max_slots: int = 50) -> List[WorkingSlot]:
@@ -331,124 +572,100 @@ class SlotProcess:
             snapshot=context,
         )
 
-        user_prompt += " /no_think"
+        user_prompt += " "
 
         schema = Schema(max_slots=max_slots)
         chat_task_slot_schema = schema.CHAT_TASK_SLOT_SCHEMA
 
-        response = asyncio.run(self.llm_model.complete(
-            system_prompt=system_prompt, 
-            user_prompt=user_prompt, 
-            json_schema=chat_task_slot_schema, 
-            schema_name="CHAT_TASK_SLOT_SCHEMA",
-            strict=False,
-            max_tokens=4096))
-        try:
-            data = json.loads(response)
-            if not data:
-                return []
-        except Exception as e:
-            print(f"JSON parsing error: {e}")
-            return []
-        
-        slots_data = data.get("slots", [])
-        if not isinstance(slots_data, list):
-            raise ValueError("`slots` must be a list.")
-        
-        working_slots: List[WorkingSlot] = []
-        allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
+        # retry policy: up to 5 attempts if we fail to create any valid WorkingSlot
+        max_retries = 5
+        last_error: Optional[Exception] = None
 
-        for slot_dict in slots_data[:max_slots]:
-            if not isinstance(slot_dict, dict):
-                continue
-            _hard_validate_slot_keys(slot_dict, allowed_keys=allowed_keys)
-
-            stage = str(slot_dict.get("stage", "")).strip()
-            topic = str(slot_dict.get("topic", "")).strip()
-            summary = str(slot_dict.get("summary", "")).strip()
-            attachments = slot_dict.get("attachments") or {}
-            tags = slot_dict.get("tags") or []
+        for attempt in range(1, max_retries + 1):
+            response = asyncio.run(self.llm_model.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_schema=chat_task_slot_schema,
+                schema_name="CHAT_TASK_SLOT_SCHEMA",
+                strict=False,
+                max_tokens=4096
+            ))
 
             try:
-                slot = WorkingSlot(
-                    stage=stage,
-                    topic=topic,
-                    summary=summary,
-                    attachments=attachments,
-                    tags=list(tags),
-                )
-                working_slots.append(slot)
+                data = json.loads(response)
+                if not data:
+                    raise ValueError("Empty JSON response")
             except Exception as e:
-                print(f"Error creating WorkingSlot: {e}")
+                last_error = e
+                print(f"[Retry {attempt}/{max_retries}] JSON parsing error: {e}")
                 continue
 
-        if len(working_slots) != 0:
-            self.total_working_slots.extend(working_slots)
-            
-        return working_slots        
-
-    async def transfer_experiment_agent_context_to_working_slots(self, context, state: str, max_slots: int = 50) -> List[WorkingSlot]:
-        
-        '''if not isinstance(context, WorkflowContext):
-            raise TypeError("context must be an instance of WorkflowContext")'''
-
-        if stage not in {"pre_analysis", "code_plan", "code_implement", "code_judge", "experiment_execute", "experiment_analysis"}:
-            return []
-
-        snapshot = _build_context_snapshot(context, state)
-
-        system_prompt = (
-            "You are an expert workflow archivist. "
-            "Transform the provided Experiment Agent context into WorkingSlot JSON objects. "
-            "Each slot must capture the stage, topic, summary (≤120 words), attachments, and tags. "
-            "Summaries must follow a Situation→Action→Result narrative whenever possible."
-        )
-
-        user_prompt = TRANSFER_EXPERIMENT_AGENT_CONTEXT_TO_WORKING_SLOTS_PROMPT.format(
-            max_slots=max_slots,
-            snapshot=snapshot,
-        )
-
-        schema = Schema(max_slots=max_slots)
-        experiment_task_slot_schema = schema.EXPERIMENT_TASK_SLOT_SCHEMA
-
-        response = await self.llm_model.complete(
-            system_prompt=system_prompt, 
-            user_prompt=user_prompt, 
-            json_schema=experiment_task_slot_schema, 
-            schema_name="EXPERIMENT_TASK_SLOT_SCHEMA",
-            strict=False)
-        data = json.loads(response)
-
-        slots_data = data.get("slots", [])
-        if not isinstance(slots_data, list):
-            raise ValueError("`slots` must be a list.")
-
-        working_slots: List[WorkingSlot] = []
-        allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
-
-        for slot_dict in slots_data[:max_slots]:
-            if not isinstance(slot_dict, dict):
+            slots_data = data.get("slots", [])
+            if not isinstance(slots_data, list):
+                last_error = ValueError("`slots` must be a list.")
+                print(f"[Retry {attempt}/{max_retries}] Invalid schema: `slots` must be a list.")
                 continue
-            _hard_validate_slot_keys(slot_dict, allowed_keys=allowed_keys)
 
-            stage = str(slot_dict.get("stage", "")).strip()
-            topic = str(slot_dict.get("topic", "")).strip()
-            summary = str(slot_dict.get("summary", "")).strip()
-            attachments = slot_dict.get("attachments") or {}
-            tags = slot_dict.get("tags") or []
+            working_slots: List[WorkingSlot] = []
+            allowed_keys = {"stage", "topic", "summary", "attachments", "tags"}
 
-            slot = WorkingSlot(
-                stage=stage,
-                topic=topic,
-                summary=summary,
-                attachments=attachments,
-                tags=list(tags),
-            )
+            try:
+                extracted_session_id = _extract_session_id_from_context(context)
+            except Exception as e:
+                # If we cannot extract session_id, retry won't help; fail fast for this call.
+                print(f"Session ID extraction error: {e}")
+                return []
 
-            working_slots.append(slot)
+            for slot_dict in slots_data[:max_slots]:
+                if not isinstance(slot_dict, dict):
+                    continue
 
-        return working_slots
+                try:
+                    _hard_validate_slot_keys(slot_dict, allowed_keys=allowed_keys)
+
+                    stage = str(slot_dict.get("stage", "")).strip()
+                    topic = str(slot_dict.get("topic", "")).strip()
+                    summary = str(slot_dict.get("summary", "")).strip()
+                    attachments = slot_dict.get("attachments") or {}
+                    tags = slot_dict.get("tags") or []
+
+                    # Ensure attachments has the expected session_ids structure, then hard-set it.
+                    if not isinstance(attachments, dict):
+                        attachments = {}
+                    session_ids = attachments.get("session_ids")
+                    if not isinstance(session_ids, dict):
+                        session_ids = {"items": []}
+                        attachments["session_ids"] = session_ids
+                    items = session_ids.get("items")
+                    if not isinstance(items, list):
+                        items = []
+                        session_ids["items"] = items
+                    session_ids["items"] = [extracted_session_id]
+
+                    slot = WorkingSlot(
+                        stage=stage,
+                        topic=topic,
+                        summary=summary,
+                        attachments=attachments,
+                        tags=list(tags),
+                    )
+                    working_slots.append(slot)
+
+                except Exception as e:
+                    last_error = e
+                    print(f"[Retry {attempt}/{max_retries}] Error creating WorkingSlot from one slot: {e}")
+                    continue
+
+            if len(working_slots) != 0:
+                self.total_working_slots.extend(working_slots)
+                return working_slots
+
+            # If we got here, no valid slots were created; retry the LLM call.
+            print(f"[Retry {attempt}/{max_retries}] No valid WorkingSlot created; retrying...")
+
+        # Exhausted retries
+        print(f"Failed to create any WorkingSlot after {max_retries} retries. Last error: {last_error}")
+        return []
 
     async def generate_long_term_memory(self, routed_slots: List[Dict[str, WorkingSlot]]) -> List[Dict[str, Any]]:
         allowed_types = {"semantic", "episodic", "procedural"}
@@ -511,7 +728,6 @@ class SlotProcess:
                 "You are a senior research archivist. Convert the WorkingSlot into a reusable "
                 "semantic memory entry that captures enduring, generalizable insights."
             )
-
             user_prompt = TRANSFER_SLOT_TO_SEMANTIC_RECORD_PROMPT_EXPEIRMENT.format(dump_slot_json=dump_slot_json(slot))
         
         elif self.task == "qa":
@@ -543,27 +759,32 @@ class SlotProcess:
 
         user_prompt += " /no_think"
 
-        response = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
-        response.lower().strip()
-        response = response.replace("<think>", "").replace("</think>", "")
+        def post_process_semantic(payload: dict, slot: WorkingSlot) -> Dict[str, Any]:
+            summary = payload.get("summary") or slot.summary
+            detail = payload.get("detail") or slot.summary
+            tags = payload.get("tags") or slot.tags
+            sem_id = new_id(prefix="sem")
+            created_at = now_iso()
+            updated_at = now_iso()
 
-        payload = _extract_json_between(response, "semantic-record", "semantic-record")
+            return {
+                "id": sem_id,
+                "summary": summary.strip() if isinstance(summary, str) else str(summary),
+                "detail": detail.strip() if isinstance(detail, str) else str(detail),
+                "tags": list(tags) if tags else [],
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
 
-        summary = payload.get("summary") or slot.summary
-        detail = payload.get("detail") or slot.summary
-        tags = payload.get("tags") or slot.tags
-        sem_id = new_id(prefix="sem")
-        created_at = now_iso()
-        updated_at = now_iso()
-
-        return {
-            "id": sem_id,
-            "summary": summary.strip(),
-            "detail": detail.strip(),
-            "tags": list(tags),
-            "created_at": created_at,
-            "updated_at": updated_at,
-        }
+        return self._retry_llm_to_record(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            record_tag="semantic-record",
+            slot=slot,
+            post_process_payload=post_process_semantic,
+            max_retries=5,
+            max_tokens=2048,
+        )
 
     async def transfer_slot_to_episodic_record(self, slot: WorkingSlot) -> Dict[str, Any]:
         if self.task == "experiment":
@@ -601,29 +822,35 @@ class SlotProcess:
 
         user_prompt += " /no_think"
 
-        response = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
-        response.lower().strip()
-        response = response.replace("<think>", "").replace("</think>", "")
+        def post_process_episodic(payload: dict, slot: WorkingSlot) -> Dict[str, Any]:
+            stage = payload.get("stage") or slot.stage
+            summary = payload.get("summary") or slot.summary
+            detail = payload.get("detail") or {}
+            tags = payload.get("tags") or slot.tags
+            epi_id = new_id(prefix="epi")
+            created_at = now_iso()
+            
+            if not isinstance(detail, dict):
+                detail = {"notes": detail}
 
-        payload = _extract_json_between(response, "episodic-record", "episodic-record")
+            return {
+                "id": epi_id,
+                "stage": stage.strip() if isinstance(stage, str) else str(stage),
+                "summary": summary.strip() if isinstance(summary, str) else str(summary),
+                "detail": detail,
+                "tags": list(tags) if tags else [],
+                "created_at": created_at,
+            }
 
-        stage = payload.get("stage") or slot.stage
-        summary = payload.get("summary") or slot.summary
-        detail = payload.get("detail") or {}
-        tags = payload.get("tags") or slot.tags
-        epi_id = new_id(prefix="epi")
-        created_at = now_iso()
-        if not isinstance(detail, dict):
-            detail = {"notes": detail}
-
-        return {
-            "id": epi_id,
-            "stage": stage.strip(),
-            "summary": summary.strip(),
-            "detail": detail,
-            "tags": list(tags),
-            "created_at": created_at,
-        }
+        return self._retry_llm_to_record(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            record_tag="episodic-record",
+            slot=slot,
+            post_process_payload=post_process_episodic,
+            max_retries=5,
+            max_tokens=2048,
+        )
 
     async def transfer_slot_to_procedural_record(self, slot: WorkingSlot) -> Dict[str, Any]:
         if self.task == "experiment":
@@ -631,8 +858,8 @@ class SlotProcess:
                 "You are an expert operations documenter. Convert the WorkingSlot into a procedural "
                 "memory entry describing reproducible steps/commands."
             )
-
-            user_prompt = TRANSFER_SLOT_TO_PROCEDURAL_RECORD_PROMPT.format(dump_slot_json=dump_slot_json(slot))
+            user_prompt = TRANSFER_SLOT_TO_PROCEDURAL_RECORD_PROMPT_EXPERIMENT.format(dump_slot_json=dump_slot_json(slot))
+        
         elif self.task == "qa":
             system_prompt = (
                 "You are a QA playbook author. "
@@ -641,6 +868,7 @@ class SlotProcess:
                 "Output only the requested JSON."
             )
             user_prompt = TRANSFER_SLOT_TO_PROCEDURAL_RECORD_PROMPT_QA.format(dump_slot_json=dump_slot_json(slot))
+        
         elif self.task == "fc":
             system_prompt = (
                 "You are a tool-use SOP (Standard Operating Procedure) writer. "
@@ -649,6 +877,7 @@ class SlotProcess:
                 "Output only the requested JSON."
             )
             user_prompt = TRANSFER_SLOT_TO_PROCEDURAL_RECORD_PROMPT_FC.format(dump_slot_json=dump_slot_json(slot))
+        
         else:
             system_prompt = (
                 "You are a personal assistant workflow designer. "
@@ -660,33 +889,38 @@ class SlotProcess:
 
         user_prompt += " /no_think"
 
-        response = await self.llm_model.complete(system_prompt=system_prompt, user_prompt=user_prompt)
-        response.lower().strip()
-        response = response.replace("<think>", "").replace("</think>", "")
-        
-        payload = _extract_json_between(response, "procedural-record", "procedural-record")
+        def post_process_procedural(payload: dict, slot: WorkingSlot) -> Dict[str, Any]:
+            name = payload.get("name") or slot.topic or "skill"
+            description = payload.get("description") or slot.summary
+            steps = payload.get("steps") or []
+            code = payload.get("code")
+            tags = payload.get("tags") or slot.tags
+            proc_id = new_id(prefix="proc")
+            created_at = now_iso()
+            updated_at = now_iso()
 
-        name = payload.get("name") or slot.topic or "skill"
-        description = payload.get("description") or slot.summary
-        steps = payload.get("steps") or []
-        code = payload.get("code")
-        tags = payload.get("tags") or slot.tags
-        proc_id = new_id(prefix="proc")
-        created_at = now_iso()
-        updated_at = now_iso()
+            if isinstance(steps, str):
+                steps = [steps]
 
-        if isinstance(steps, str):
-            steps = [steps]
+            clean_steps = [step.strip() for step in steps if isinstance(step, str) and step.strip()]
 
-        clean_steps = [step.strip() for step in steps if isinstance(step, str) and step.strip()]
+            return {
+                "id": proc_id,
+                "name": name.strip() if isinstance(name, str) else str(name),
+                "description": description.strip() if isinstance(description, str) else str(description),
+                "steps": clean_steps,
+                "code": code.strip() if isinstance(code, str) else None,
+                "tags": list(tags) if tags else [],
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
 
-        return {
-            "id": proc_id,
-            "name": name.strip(),
-            "description": description.strip(),
-            "steps": clean_steps,
-            "code": code.strip() if isinstance(code, str) else None,
-            "tags": list(tags),
-            "created_at": created_at,
-            "updated_at": updated_at,
-        }
+        return self._retry_llm_to_record(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            record_tag="procedural-record",
+            slot=slot,
+            post_process_payload=post_process_procedural,
+            max_retries=5,
+            max_tokens=2048,
+        )

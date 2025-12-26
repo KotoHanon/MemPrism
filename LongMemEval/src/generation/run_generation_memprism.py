@@ -27,6 +27,7 @@ from textwrap import dedent
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--in_file', type=str, required=True)
+    parser.add_argument('--resume_file', type=str, default=None)
     parser.add_argument('--out_dir', type=str, required=True)
     parser.add_argument('--out_file_suffix', type=str, default="")
         
@@ -148,7 +149,7 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
     
         # transfer chat context to working slots, filter and route slots, and transfer slots to memory
         _multi_thread_run(slot_process_vllm.transfer_chat_agent_context_to_working_slots, context_list, max_workers=10)
-        working_slots = slot_process_vllm.total_working_slots.copy()
+        working_slots = slot_process_vllm.total_working_slots.copy()           
         print(f"[Info] Transferring session {session_id} to memories, number of working slots: {len(working_slots)}")
         _multi_thread_run(slot_process_openai.multi_thread_filter_and_route_slot, working_slots, max_workers=max_workers)
 
@@ -405,7 +406,7 @@ def reset_memprism_system(args):
 
     return slot_process_vllm, slot_process_openai, semantic_memory_system, episodic_memory_system
 
-def get_related_information_by_query(query: str, slot_process: SlotProcess, working_slots: List[WorkingSlot], semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, limit: int = 75):
+def get_related_information_by_query(query: str, slot_process: SlotProcess, working_slots: List[WorkingSlot], semantic_memory_system: FAISSMemorySystem, episodic_memory_system: FAISSMemorySystem, limit: int = 40):
     semantic_query_results = semantic_memory_system.query(query, limit=limit, threshold=0.5)
     episodic_query_results = episodic_memory_system.query(query, limit=limit)
 
@@ -430,15 +431,23 @@ def get_related_information_by_query(query: str, slot_process: SlotProcess, work
     episodic_records = [record for score, record in episodic_query_results]
     slots = [slot for score, slot in slots_query_results]
     session_ids = []
+    total_session_ids = []
     
     for slot in slots:
         session_id = slot.attachments.get("session_ids").get("items", [])[0]
         if session_id is not None:
             session_ids.append(session_id)
+
+    for slot in working_slots:
+        session_id = slot.attachments.get("session_ids").get("items", [])[0]
+        if session_id is not None:
+            total_session_ids.append(session_id)
     
     # duplicate removal
     session_ids = list(set(session_ids))
-    print(len(session_ids), "related sessions retrieved from working slots.")
+    total_session_ids = list(set(total_session_ids))
+
+    print(f"[Info] Total session ids in working slots: {len(total_session_ids)}, retrieved session ids: {len(session_ids)}")
     
     return semantic_records, episodic_records, session_ids
 
@@ -465,6 +474,15 @@ def main(args):
     except:
         in_data = [json.loads(line) for line in open(args.in_file).readlines()]
 
+    if args.resume_file != "none":
+        try:
+            result_data = json.load(open(args.resume_file))
+            already_done_question_ids = [entry['question_id'] for entry in result_data]
+        except:
+            result_data = [json.loads(line) for line in open(args.resume_file).readlines()]
+            already_done_question_ids = [entry['question_id'] for entry in result_data]
+
+
     in_file_tmp = args.in_file.split('/')[-1]
     if args.merge_key_expansion_into_value is not None and args.merge_key_expansion_into_value != 'none':
         out_file = args.out_dir + '/' + in_file_tmp + '_testlog_top{}context_{}format_useronly{}_factexpansion{}_{}'.format(args.topk_context, args.history_format, args.useronly, args.merge_key_expansion_into_value, datetime.now().strftime("%Y%m%d-%H%M"))
@@ -472,7 +490,10 @@ def main(args):
         out_file = args.out_dir + '/' + in_file_tmp + '_testlog_top{}context_{}format_useronly{}_{}'.format(args.topk_context, args.history_format, args.useronly, datetime.now().strftime("%Y%m%d-%H%M"))
     if args.out_file_suffix.strip() != "":
         out_file += args.out_file_suffix
-    out_f = open(out_file, 'w')
+    if args.resume_file == "none":
+        out_f = open(out_file, 'w')
+    else:
+        out_f = open(args.resume_file, 'a')
 
     # inference
     model2maxlength = {
@@ -499,6 +520,9 @@ def main(args):
 
     total_prompt_tokens, total_completion_tokens = 0, 0
     for entry in tqdm(in_data):
+
+        if entry['question_id'] in already_done_question_ids:
+            continue
 
         # Ttruncate the retrieval part of the prompt such that the context length never exceeds
         gen_length = args.gen_length
